@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'panel_parser.dart';
 import 'models/panel_model.dart';
-import 'models/control_types.dart';  // Added this import
+import 'models/control_types.dart';
+import 'panel_viewer.dart';
 
 class PanelLoaderScreen extends StatefulWidget {
   const PanelLoaderScreen({super.key});
@@ -33,6 +34,16 @@ class _PanelLoaderScreenState extends State<PanelLoaderScreen> {
     });
   }
 
+  void _viewPanel() {
+    if (_loadedPanel == null) return;
+    
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) => PanelViewer(panel: _loadedPanel!),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -47,6 +58,13 @@ class _PanelLoaderScreenState extends State<PanelLoaderScreen> {
               onPressed: _loadPanel,
               child: const Text('Load Panel File'),
             ),
+            if (_loadedPanel != null) ...[
+              const SizedBox(height: 8),
+              ElevatedButton(
+                onPressed: _viewPanel,
+                child: const Text('View Panel'),
+              ),
+            ],
             const SizedBox(height: 20),
             Text(_statusMessage),
             if (_loadedPanel != null) ...[
