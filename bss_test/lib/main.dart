@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
+import 'dart:isolate';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -33,13 +33,15 @@ class BSSControllerScreen extends StatefulWidget {
 
 class _BSSControllerScreenState extends State<BSSControllerScreen> {
   // Connection state
+  bool isConnecting = false;
   bool isConnected = false;
   Socket? socket;
   StreamSubscription<Uint8List>? socketSubscription;
   
-  // Automatic meter refresh
+  // Meter update control
   Timer? meterRefreshTimer;
   bool autoRefreshMeter = true;
+  int meterRefreshRateValue = 100; // Default 100ms (10 updates per second)
   
   // Text controllers
   final ipAddressController = TextEditingController(text: "192.168.0.20");
@@ -52,30 +54,192 @@ class _BSSControllerScreenState extends State<BSSControllerScreen> {
   final buttonParamIdController = TextEditingController(text: "0x1");
   final meterHiQnetAddressController = TextEditingController(text: "0x2D6803000200");
   final meterParamIdController = TextEditingController(text: "0x0");
+  final sourceHiQnetAddressController = TextEditingController(text: "0x2D6803000300");
+  final sourceParamIdController = TextEditingController(text: "0x0");
   
   // Control values
   double faderValue = 1.0; // 100% = max value
   bool buttonState = false;
-  double meterValue = 0.0; // -80dB to +40dB, normalized to 0.0-1.0
+  double meterValue = 0.0; // -80dB to +40dB, normalized to a 0.0-1.0 range
+  int sourceValue = 0; // Multi-state parameter (0, 1, 2, etc.)
+  int numSourceOptions = 8; // Number of source options available
   
-  // Command strings
+  // Command strings (for display purposes)
   String faderMaxString = "02,88,2D,68,1B,83,00,01,00,00,00,01,86,A0,E8,03";
   String faderMinString = "02,88,2D,68,1B,83,00,01,00,00,00,FF,FB,B7,D7,AB,03";
   String buttonOnString = "02,88,2D,68,1B,83,00,01,00,00,01,00,00,00,01,CF,03";
   String buttonOffString = "02,88,2D,68,1B,83,00,01,00,00,01,00,00,00,00,CE,03";
   String meterSubscribeString = "02,89,2D,68,1B,83,00,02,00,00,00,A2,03";
+  String sourceSelectString = "02,88,2D,68,1B,83,00,03,00,00,00,00,00,00,00,A5,03";
   
-  // Buffer for incoming data
+  // Buffer for incoming data - increased size for better throughput
   final List<int> _buffer = [];
+  
+  // Isolate for message processing
+  Isolate? _messageProcessorIsolate;
+  ReceivePort? _receivePort;
+  SendPort? _sendPort;
+  
+  // Meter UI update optimization
+  int _lastUIUpdateTime = 0;
+  double _lastMeterValue = 0.0;
+  final int _minUpdateInterval = 16; // ~60fps in milliseconds
+  
+  // Meter subscription tracking
+  int _lastMeterSubscribeTime = 0;
+  int _meterSubscribeCount = 0;
   
   // Log messages
   final List<String> _logMessages = [];
-  final int _maxLogMessages = 10;
+  final int _maxLogMessages = 20;
 
   @override
   void initState() {
     super.initState();
     updateCommandStrings();
+    _setupMessageProcessor();
+  }
+
+  Future<void> _setupMessageProcessor() async {
+    _receivePort = ReceivePort();
+    _messageProcessorIsolate = await Isolate.spawn(
+      _messageProcessorEntryPoint, 
+      _receivePort!.sendPort
+    );
+    
+    _receivePort!.listen((message) {
+      if (message is SendPort) {
+        _sendPort = message;
+      } else if (message is Map) {
+        // Handle processed messages from isolate
+        if (message['type'] == 'processedMessage') {
+          handleProcessedMessage(message['data']);
+        } else if (message['type'] == 'log') {
+          addLog(message['message']);
+        }
+      }
+    });
+  }
+  
+  // Isolate entry point for message processing
+  static void _messageProcessorEntryPoint(SendPort sendPort) {
+    final ReceivePort receivePort = ReceivePort();
+    sendPort.send(receivePort.sendPort);
+    
+    receivePort.listen((message) {
+      if (message is List<int>) {
+        // Process the message
+        try {
+          final processedMessage = _processMessageInIsolate(message);
+          if (processedMessage != null) {
+            sendPort.send({
+              'type': 'processedMessage',
+              'data': processedMessage
+            });
+          }
+        } catch (e) {
+          sendPort.send({
+            'type': 'log',
+            'message': 'Error processing message in isolate: $e'
+          });
+        }
+      }
+    });
+  }
+  
+  static Map<String, dynamic>? _processMessageInIsolate(List<int> message) {
+    // Remove start and end bytes
+    if (message.length < 3) return null;
+    
+    List<int> body = message.sublist(1, message.length - 1);
+    
+    // Perform byte substitution reversal
+    List<int> unsubstitutedBody = [];
+    for (int i = 0; i < body.length; i++) {
+      if (body[i] == 0x1B && i + 1 < body.length) {
+        if (body[i + 1] == 0x82) {
+          unsubstitutedBody.add(0x02);
+          i++;
+        } else if (body[i + 1] == 0x83) {
+          unsubstitutedBody.add(0x03);
+          i++;
+        } else if (body[i + 1] == 0x86) {
+          unsubstitutedBody.add(0x06);
+          i++;
+        } else if (body[i + 1] == 0x95) {
+          unsubstitutedBody.add(0x15);
+          i++;
+        } else if (body[i + 1] == 0x9B) {
+          unsubstitutedBody.add(0x1B);
+          i++;
+        } else {
+          unsubstitutedBody.add(body[i]);
+        }
+      } else {
+        unsubstitutedBody.add(body[i]);
+      }
+    }
+    
+    // Verify checksum
+    if (unsubstitutedBody.length < 2) return null;
+    
+    int receivedChecksum = unsubstitutedBody.last;
+    unsubstitutedBody.removeLast();
+    
+    int calculatedChecksum = 0;
+    for (int b in unsubstitutedBody) {
+      calculatedChecksum ^= b;
+    }
+    
+    if (receivedChecksum != calculatedChecksum) {
+      return {'error': 'Checksum mismatch'};
+    }
+    
+    // Parse message
+    if (unsubstitutedBody.isEmpty) return null;
+    
+    int msgType = unsubstitutedBody[0];
+    if (msgType == 0x88) { // SET message
+      // Extract address, paramId, and value
+      if (unsubstitutedBody.length < 13) return null;
+      
+      List<int> address = unsubstitutedBody.sublist(1, 7); // 6 bytes address
+      int paramId = (unsubstitutedBody[7] << 8) | unsubstitutedBody[8];
+      int value = (unsubstitutedBody[9] << 24) | 
+                 (unsubstitutedBody[10] << 16) | 
+                 (unsubstitutedBody[11] << 8) | 
+                  unsubstitutedBody[12];
+      
+      return {
+        'type': 'SET',
+        'address': address,
+        'paramId': paramId,
+        'value': value
+      };
+    } else if (msgType == 0x8D) { // SET_PERCENT message
+      // Similar to SET but with percent value
+      if (unsubstitutedBody.length < 13) return null;
+      
+      List<int> address = unsubstitutedBody.sublist(1, 7);
+      int paramId = (unsubstitutedBody[7] << 8) | unsubstitutedBody[8];
+      int value = (unsubstitutedBody[9] << 24) | 
+                 (unsubstitutedBody[10] << 16) | 
+                 (unsubstitutedBody[11] << 8) | 
+                  unsubstitutedBody[12];
+      
+      return {
+        'type': 'SET_PERCENT',
+        'address': address,
+        'paramId': paramId,
+        'value': value
+      };
+    } else if (msgType == 0x06) { // ACK
+      return {'type': 'ACK'};
+    } else if (msgType == 0x15) { // NAK
+      return {'type': 'NAK'};
+    }
+    
+    return null;
   }
 
   @override
@@ -83,6 +247,8 @@ class _BSSControllerScreenState extends State<BSSControllerScreen> {
     disconnectFromDevice();
     socketSubscription?.cancel();
     meterRefreshTimer?.cancel();
+    
+    // Clean up text controllers
     ipAddressController.dispose();
     portController.dispose();
     faderHiQnetAddressController.dispose();
@@ -91,6 +257,13 @@ class _BSSControllerScreenState extends State<BSSControllerScreen> {
     buttonParamIdController.dispose();
     meterHiQnetAddressController.dispose();
     meterParamIdController.dispose();
+    sourceHiQnetAddressController.dispose();
+    sourceParamIdController.dispose();
+    
+    // Clean up isolate
+    _messageProcessorIsolate?.kill(priority: Isolate.immediate);
+    _receivePort?.close();
+    
     super.dispose();
   }
   
@@ -105,23 +278,34 @@ class _BSSControllerScreenState extends State<BSSControllerScreen> {
     debugPrint(message);
   }
 
-  // Connect to the BSS device
+  // Connect to the BSS device with improved error handling
   Future<void> connectToDevice() async {
-    if (isConnected) return;
+    if (isConnected || isConnecting) return;
+    
+    setState(() {
+      isConnecting = true;
+    });
     
     final ip = ipAddressController.text;
     final port = int.parse(portController.text);
     
     try {
-      socket = await Socket.connect(ip, port);
+      // Set a connection timeout
+      socket = await Socket.connect(ip, port, timeout: const Duration(seconds: 5));
+      
       setState(() {
         isConnected = true;
+        isConnecting = false;
         _buffer.clear(); // Clear buffer on new connection
+        _lastUIUpdateTime = DateTime.now().millisecondsSinceEpoch; // Reset timer
       });
       
       addLog('Connected to $ip:$port');
       
-      // Listen for responses from the device
+      // Configure socket for better throughput
+      socket!.setOption(SocketOption.tcpNoDelay, true);
+      
+      // Listen for responses from the device with error handling
       socketSubscription = socket!.listen(
         (Uint8List data) {
           // Process incoming data
@@ -135,15 +319,19 @@ class _BSSControllerScreenState extends State<BSSControllerScreen> {
           addLog('Socket closed');
           disconnectFromDevice();
         },
+        cancelOnError: false,
       );
       
-      // Subscribe to parameters (request current values)
-      subscribeToParameters();
+      // Subscribe to parameters after connection
+      await subscribeToParameters();
       
-      // Start automatic meter refresh timer
+      // Start automatic meter refresh timer if enabled
       if (autoRefreshMeter) {
-        startMeterRefreshTimer();
+        startMeterRefreshTimer(meterRate: meterRefreshRateValue);
       }
+      
+      // Start meter monitoring to auto-resubscribe if needed
+      startMeterMonitoring();
       
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -151,6 +339,10 @@ class _BSSControllerScreenState extends State<BSSControllerScreen> {
         );
       }
     } catch (e) {
+      setState(() {
+        isConnecting = false;
+      });
+      
       addLog('Failed to connect: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -162,7 +354,7 @@ class _BSSControllerScreenState extends State<BSSControllerScreen> {
 
   // Disconnect from the BSS device
   void disconnectFromDevice() {
-    if (!isConnected) return;
+    if (!isConnected && !isConnecting) return;
     
     // Stop the meter refresh timer
     meterRefreshTimer?.cancel();
@@ -179,8 +371,10 @@ class _BSSControllerScreenState extends State<BSSControllerScreen> {
     socketSubscription = null;
     socket?.close();
     socket = null;
+    
     setState(() {
       isConnected = false;
+      isConnecting = false;
     });
     
     addLog('Disconnected from device');
@@ -189,28 +383,77 @@ class _BSSControllerScreenState extends State<BSSControllerScreen> {
     );
   }
 
-  // Start timer for automatic meter refresh
-  void startMeterRefreshTimer() {
+  // Start meter refresh with proper rate parameter - improved with protections
+  void startMeterRefreshTimer({int meterRate = 100}) {
     // Cancel existing timer if any
     meterRefreshTimer?.cancel();
     
-    // Create a new timer that fires every 5 seconds
-    meterRefreshTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
-      if (isConnected) {
-        try {
-          // Re-subscribe to meter parameter to ensure updates continue
-          final meterAddress = parseHiQnetAddress(meterHiQnetAddressController.text);
-          final meterParamId = int.parse(meterParamIdController.text.replaceAll("0x", ""), radix: 16);
-          final command = generateSubscribeCommand(meterAddress, meterParamId);
-          sendCommand(command);
-          addLog('Auto-refresh: re-subscribed to meter parameter');
-        } catch (e) {
-          // Silent fail on auto-refresh, don't bother the user unless they requested it
-          addLog('Error in auto-refresh meter: $e');
-        }
-      } else {
-        // Stop the timer if disconnected
+    int currentTime = DateTime.now().millisecondsSinceEpoch;
+    
+    // Prevent excessive resubscribing (no more than once per second)
+    if (currentTime - _lastMeterSubscribeTime < 1000) {
+      _meterSubscribeCount++;
+      if (_meterSubscribeCount > 5) {
+        addLog('Warning: Too many meter subscription attempts - throttling');
+        Future.delayed(const Duration(seconds: 2), () {
+          _meterSubscribeCount = 0;
+          startMeterRefreshTimer(meterRate: meterRate);
+        });
+        return;
+      }
+    } else {
+      _meterSubscribeCount = 0;
+    }
+    
+    _lastMeterSubscribeTime = currentTime;
+    
+    // Subscribe to meter parameter with specified rate
+    try {
+      final meterAddress = parseHiQnetAddress(meterHiQnetAddressController.text);
+      final meterParamId = int.parse(meterParamIdController.text.replaceAll("0x", ""), radix: 16);
+      
+      // First, unsubscribe from both formats to ensure clean state
+      final unsubPercentCmd = generateUnsubscribePercentCommand(meterAddress, meterParamId);
+      sendCommand(unsubPercentCmd);
+      
+      final unsubCmd = generateUnsubscribeCommand(meterAddress, meterParamId);
+      sendCommand(unsubCmd);
+      
+      // Short delay before resubscribing
+      Future.delayed(const Duration(milliseconds: 100), () {
+        // Generate command with meter rate - use regular subscribe (0x89), not percent
+        final command = generateSubscribeCommand(meterAddress, meterParamId, meterRate);
+        sendCommand(command);
+        
+        // Update the displayed command string
+        setState(() {
+          meterSubscribeString = bytesToHexString(command);
+          meterRefreshRateValue = meterRate;
+        });
+        
+        addLog('Subscribed to meter parameter with rate: $meterRate ms');
+      });
+    } catch (e) {
+      addLog('Error subscribing to meter: $e');
+    }
+  }
+  
+  // Add meter monitoring to detect if meter updates stop
+  void startMeterMonitoring() {
+    // Create a timer that periodically checks if meter values are being received
+    Timer.periodic(const Duration(seconds: 10), (timer) {
+      if (!isConnected) {
         timer.cancel();
+        return;
+      }
+      
+      int currentTime = DateTime.now().millisecondsSinceEpoch;
+      // If we haven't received a meter update in more than 5 seconds
+      if ((currentTime - _lastUIUpdateTime) > 5000 && autoRefreshMeter) {
+        addLog('No meter updates received recently, resubscribing...');
+        
+        // Resubscribe to meter
+        startMeterRefreshTimer(meterRate: meterRefreshRateValue);
       }
     });
   }
@@ -222,30 +465,58 @@ class _BSSControllerScreenState extends State<BSSControllerScreen> {
     });
     
     if (autoRefreshMeter && isConnected) {
-      startMeterRefreshTimer();
+      // If turning on, ensure we're properly subscribed
+      startMeterRefreshTimer(meterRate: meterRefreshRateValue);
     } else {
+      // If turning off auto-refresh, unsubscribe from meter updates
+      try {
+        final meterAddress = parseHiQnetAddress(meterHiQnetAddressController.text);
+        final meterParamId = int.parse(meterParamIdController.text.replaceAll("0x", ""), radix: 16);
+        
+        // First unsubscribe from percent format (in case it was subscribed that way)
+        final unsubPercentCmd = generateUnsubscribePercentCommand(meterAddress, meterParamId);
+        sendCommand(unsubPercentCmd);
+        
+        // Then unsubscribe from regular format
+        final unsubCmd = generateUnsubscribeCommand(meterAddress, meterParamId);
+        sendCommand(unsubCmd);
+        
+        addLog('Unsubscribed from meter parameter (both formats)');
+      } catch (e) {
+        addLog('Error unsubscribing from meter: $e');
+      }
+      
       meterRefreshTimer?.cancel();
       meterRefreshTimer = null;
     }
   }
 
-  // Send a command to the BSS device
-  void sendCommand(List<int> command) {
+  // Send a command to the BSS device with retry capability
+  Future<bool> sendCommand(List<int> command, {int retries = 2}) async {
     if (!isConnected || socket == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Not connected to device')),
       );
-      return;
+      return false;
     }
     
     try {
       socket!.add(Uint8List.fromList(command));
       addLog('Sent command: ${bytesToHexString(command)}');
+      return true;
     } catch (e) {
       addLog('Failed to send command: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to send command: $e')),
-      );
+      
+      if (retries > 0) {
+        // Wait a moment and retry
+        await Future.delayed(const Duration(milliseconds: 100));
+        return sendCommand(command, retries: retries - 1);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to send command: $e')),
+        );
+        return false;
+      }
     }
   }
 
@@ -264,12 +535,17 @@ class _BSSControllerScreenState extends State<BSSControllerScreen> {
       final meterAddress = parseHiQnetAddress(meterHiQnetAddressController.text);
       final meterParamId = int.parse(meterParamIdController.text.replaceAll("0x", ""), radix: 16);
       
+      // Parse source HiQnet address and parameter ID
+      final sourceAddress = parseHiQnetAddress(sourceHiQnetAddressController.text);
+      final sourceParamId = int.parse(sourceParamIdController.text.replaceAll("0x", ""), radix: 16);
+      
       // Generate command strings
       final faderMaxCmd = generateSetCommand(faderAddress, faderParamId, 0x0186A0);
       final faderMinCmd = generateSetCommand(faderAddress, faderParamId, 0xFFFBB7D7);
       final buttonOnCmd = generateSetCommand(buttonAddress, buttonParamId, 0x1);
       final buttonOffCmd = generateSetCommand(buttonAddress, buttonParamId, 0x0);
-      final meterSubscribeCmd = generateSubscribeCommand(meterAddress, meterParamId);
+      final meterSubscribeCmd = generateSubscribeCommand(meterAddress, meterParamId, meterRefreshRateValue);
+      final sourceSelectCmd = generateSetCommand(sourceAddress, sourceParamId, sourceValue);
       
       setState(() {
         faderMaxString = bytesToHexString(faderMaxCmd);
@@ -277,6 +553,7 @@ class _BSSControllerScreenState extends State<BSSControllerScreen> {
         buttonOnString = bytesToHexString(buttonOnCmd);
         buttonOffString = bytesToHexString(buttonOffCmd);
         meterSubscribeString = bytesToHexString(meterSubscribeCmd);
+        sourceSelectString = bytesToHexString(sourceSelectCmd);
       });
       
       addLog('Command strings updated');
@@ -292,7 +569,7 @@ class _BSSControllerScreenState extends State<BSSControllerScreen> {
 
   // Parse HiQnet address string to list of bytes
   List<int> parseHiQnetAddress(String addressHex) {
-    final hexString = addressHex.replaceAll("0x", "");
+    final hexString = addressHex.replaceAll("0x", "").replaceAll(" ", "");
     final bytes = <int>[];
     
     for (int i = 0; i < hexString.length; i += 2) {
@@ -304,8 +581,8 @@ class _BSSControllerScreenState extends State<BSSControllerScreen> {
     return bytes;
   }
 
-  // Generate a command with checksum and byte substitution
-  List<int> generateCommand(int commandType, List<int> addressBytes, int paramId, [int value = 0]) {
+  // Generate a command with checksum and byte substitution - core messaging function
+  List<int> generateCommand(int commandType, List<int> addressBytes, int paramId, [int value = 0, int meterRate = 0]) {
     // Command structure:
     // 0x02 (start) + commandType + Address + ParamID + Value (optional) + Checksum + 0x03 (end)
     
@@ -324,6 +601,20 @@ class _BSSControllerScreenState extends State<BSSControllerScreen> {
       command.add((value >> 16) & 0xFF); // Byte 2
       command.add((value >> 8) & 0xFF);  // Byte 3
       command.add(value & 0xFF);         // Byte 4 (LSB)
+    } 
+    // For meter parameter subscription, add meter rate
+    else if ((commandType == 0x89 || commandType == 0x8E) && paramId == 0x0) {
+      command.add(0x00);                    // Byte 1 (MSB)
+      command.add(0x00);                    // Byte 2
+      command.add((meterRate >> 8) & 0xFF); // Byte 3
+      command.add(meterRate & 0xFF);        // Byte 4 (LSB)
+    }
+    // For other commands that need data payload
+    else if (commandType == 0x89 || commandType == 0x8A || commandType == 0x8E || commandType == 0x8F) {
+      command.add(0x00); // Byte 1 (MSB)
+      command.add(0x00); // Byte 2
+      command.add(0x00); // Byte 3
+      command.add(0x00); // Byte 4 (LSB)
     }
     
     // Calculate checksum (XOR of all bytes in the command)
@@ -360,14 +651,29 @@ class _BSSControllerScreenState extends State<BSSControllerScreen> {
     return generateCommand(0x88, addressBytes, paramId, value);
   }
   
-  // Generate a SUBSCRIBE command (0x89)
-  List<int> generateSubscribeCommand(List<int> addressBytes, int paramId) {
-    return generateCommand(0x89, addressBytes, paramId);
+  // Generate a SET_PERCENT command (0x8D)
+  List<int> generateSetPercentCommand(List<int> addressBytes, int paramId, int percentValue) {
+    return generateCommand(0x8D, addressBytes, paramId, percentValue);
+  }
+  
+  // Generate a SUBSCRIBE command (0x89) with meter rate option
+  List<int> generateSubscribeCommand(List<int> addressBytes, int paramId, [int meterRate = 100]) {
+    return generateCommand(0x89, addressBytes, paramId, 0, meterRate);
+  }
+  
+  // Generate a SUBSCRIBE_PERCENT command (0x8E) with meter rate option
+  List<int> generateSubscribePercentCommand(List<int> addressBytes, int paramId, [int meterRate = 100]) {
+    return generateCommand(0x8E, addressBytes, paramId, 0, meterRate);
   }
   
   // Generate an UNSUBSCRIBE command (0x8A)
   List<int> generateUnsubscribeCommand(List<int> addressBytes, int paramId) {
     return generateCommand(0x8A, addressBytes, paramId);
+  }
+  
+  // Generate an UNSUBSCRIBE_PERCENT command (0x8F)
+  List<int> generateUnsubscribePercentCommand(List<int> addressBytes, int paramId) {
+    return generateCommand(0x8F, addressBytes, paramId);
   }
   
   // Generate fader command based on current value
@@ -394,26 +700,32 @@ class _BSSControllerScreenState extends State<BSSControllerScreen> {
     }
   }
 
-  // Subscribe to parameters
-  void subscribeToParameters() {
+  // Subscribe to parameters with optimized approach
+  Future<void> subscribeToParameters() async {
     try {
       // Subscribe to fader parameter
       final faderAddress = parseHiQnetAddress(faderHiQnetAddressController.text);
       final faderParamId = int.parse(faderParamIdController.text.replaceAll("0x", ""), radix: 16);
       final faderSubscribeCmd = generateSubscribeCommand(faderAddress, faderParamId);
-      sendCommand(faderSubscribeCmd);
+      await sendCommand(faderSubscribeCmd);
       
       // Subscribe to button parameter
       final buttonAddress = parseHiQnetAddress(buttonHiQnetAddressController.text);
       final buttonParamId = int.parse(buttonParamIdController.text.replaceAll("0x", ""), radix: 16);
       final buttonSubscribeCmd = generateSubscribeCommand(buttonAddress, buttonParamId);
-      sendCommand(buttonSubscribeCmd);
+      await sendCommand(buttonSubscribeCmd);
       
-      // Subscribe to meter parameter
+      // Subscribe to meter parameter with specific refresh rate
       final meterAddress = parseHiQnetAddress(meterHiQnetAddressController.text);
       final meterParamId = int.parse(meterParamIdController.text.replaceAll("0x", ""), radix: 16);
-      final meterSubscribeCmd = generateSubscribeCommand(meterAddress, meterParamId);
-      sendCommand(meterSubscribeCmd);
+      final meterSubscribeCmd = generateSubscribeCommand(meterAddress, meterParamId, meterRefreshRateValue);
+      await sendCommand(meterSubscribeCmd);
+      
+      // Subscribe to source selector parameter
+      final sourceAddress = parseHiQnetAddress(sourceHiQnetAddressController.text);
+      final sourceParamId = int.parse(sourceParamIdController.text.replaceAll("0x", ""), radix: 16);
+      final sourceSubscribeCmd = generateSubscribeCommand(sourceAddress, sourceParamId);
+      await sendCommand(sourceSubscribeCmd);
       
       addLog('Subscribed to parameters');
     } catch (e) {
@@ -427,7 +739,7 @@ class _BSSControllerScreenState extends State<BSSControllerScreen> {
   }
   
   // Unsubscribe from parameters
-  void unsubscribeFromParameters() {
+  Future<void> unsubscribeFromParameters() async {
     if (socket == null) return;
     
     try {
@@ -435,19 +747,25 @@ class _BSSControllerScreenState extends State<BSSControllerScreen> {
       final faderAddress = parseHiQnetAddress(faderHiQnetAddressController.text);
       final faderParamId = int.parse(faderParamIdController.text.replaceAll("0x", ""), radix: 16);
       final faderUnsubscribeCmd = generateUnsubscribeCommand(faderAddress, faderParamId);
-      sendCommand(faderUnsubscribeCmd);
+      await sendCommand(faderUnsubscribeCmd);
       
       // Unsubscribe from button parameter
       final buttonAddress = parseHiQnetAddress(buttonHiQnetAddressController.text);
       final buttonParamId = int.parse(buttonParamIdController.text.replaceAll("0x", ""), radix: 16);
       final buttonUnsubscribeCmd = generateUnsubscribeCommand(buttonAddress, buttonParamId);
-      sendCommand(buttonUnsubscribeCmd);
+      await sendCommand(buttonUnsubscribeCmd);
       
       // Unsubscribe from meter parameter
       final meterAddress = parseHiQnetAddress(meterHiQnetAddressController.text);
       final meterParamId = int.parse(meterParamIdController.text.replaceAll("0x", ""), radix: 16);
       final meterUnsubscribeCmd = generateUnsubscribeCommand(meterAddress, meterParamId);
-      sendCommand(meterUnsubscribeCmd);
+      await sendCommand(meterUnsubscribeCmd);
+      
+      // Unsubscribe from source selector parameter
+      final sourceAddress = parseHiQnetAddress(sourceHiQnetAddressController.text);
+      final sourceParamId = int.parse(sourceParamIdController.text.replaceAll("0x", ""), radix: 16);
+      final sourceUnsubscribeCmd = generateUnsubscribeCommand(sourceAddress, sourceParamId);
+      await sendCommand(sourceUnsubscribeCmd);
       
       addLog('Unsubscribed from parameters');
     } catch (e) {
@@ -455,7 +773,7 @@ class _BSSControllerScreenState extends State<BSSControllerScreen> {
     }
   }
   
-  // Handle incoming data from the device
+  // Handle incoming data from the device - improved version
   void handleIncomingData(Uint8List newData) {
     // Add new data to buffer
     _buffer.addAll(newData);
@@ -477,7 +795,12 @@ class _BSSControllerScreenState extends State<BSSControllerScreen> {
       // Look for end byte
       int endIndex = _buffer.indexOf(0x03);
       if (endIndex == -1 || _buffer.length < endIndex + 1) {
-        // Not a complete message yet
+        // Not a complete message yet, but keep buffer
+        // Set a reasonable buffer size limit to prevent memory issues
+        if (_buffer.length > 4096) {
+          _buffer.removeRange(0, _buffer.length - 2048);
+          addLog('Buffer size limited to prevent overflow');
+        }
         return;
       }
       
@@ -485,12 +808,36 @@ class _BSSControllerScreenState extends State<BSSControllerScreen> {
       List<int> message = _buffer.sublist(0, endIndex + 1);
       _buffer.removeRange(0, endIndex + 1);
       
-      // Process the message
-      processMessage(message);
+      // Process the message using isolate if available, otherwise process directly
+      if (_sendPort != null) {
+        _sendPort!.send(message);
+      } else {
+        processMessage(message);
+      }
     }
   }
   
-  // Process a complete message
+  // Handle processed messages from isolate
+  void handleProcessedMessage(Map<String, dynamic> processedMessage) {
+    if (processedMessage['type'] == 'SET' || processedMessage['type'] == 'SET_PERCENT') {
+      // Extract details
+      List<int> address = processedMessage['address'];
+      int paramId = processedMessage['paramId'];
+      int value = processedMessage['value'];
+      
+      // Update UI based on message
+      updateUIFromSetMessage(address, paramId, value);
+    } else if (processedMessage['type'] == 'ACK') {
+      // Handle acknowledgement
+      // addLog('Received ACK');
+    } else if (processedMessage['type'] == 'NAK') {
+      addLog('Received NAK - command rejected');
+    } else if (processedMessage['error'] != null) {
+      addLog('Message processing error: ${processedMessage['error']}');
+    }
+  }
+  
+  // Process a complete message directly (used as fallback)
   void processMessage(List<int> message) {
     try {
       // Remove start and end bytes
@@ -523,7 +870,7 @@ class _BSSControllerScreenState extends State<BSSControllerScreen> {
         }
       }
       
-      // Verify checksum (last byte)
+      // Verify checksum
       if (unsubstitutedBody.length < 2) return;
       
       int receivedChecksum = unsubstitutedBody.last;
@@ -545,10 +892,13 @@ class _BSSControllerScreenState extends State<BSSControllerScreen> {
       int msgType = unsubstitutedBody[0];
       if (msgType == 0x88) { // SET message
         processSetMessage(unsubstitutedBody);
+      } else if (msgType == 0x8D) { // SET_PERCENT message
+        processSetPercentMessage(unsubstitutedBody);
       } else if (msgType == 0x06) { // ACK
-        addLog('Received ACK');
+        // Received acknowledgement
+        // addLog('Received ACK');
       } else if (msgType == 0x15) { // NAK
-        addLog('Received NAK');
+        addLog('Received NAK - command rejected');
       }
     } catch (e) {
       addLog('Error processing message: $e');
@@ -560,7 +910,7 @@ class _BSSControllerScreenState extends State<BSSControllerScreen> {
     try {
       // Verify message length
       // SET message structure: 0x88 + Address + ParamID + Value + Checksum
-      if (message.length < 10) {
+      if (message.length < 13) {
         addLog('SET message too short: ${bytesToHexString(message)}');
         return;
       }
@@ -573,22 +923,48 @@ class _BSSControllerScreenState extends State<BSSControllerScreen> {
       
       // Extract value (4 bytes)
       int value = 0;
-      if (message.length >= 13) {
-        value = (message[9] << 24) | (message[10] << 16) | (message[11] << 8) | message[12];
-      }
+      value = (message[9] << 24) | (message[10] << 16) | (message[11] << 8) | message[12];
       
-      // Convert address to hex string for logging
-      String addressHex = address.map((b) => b.toRadixString(16).padLeft(2, '0')).join('');
-      
-      // Only log meter updates if they're not too frequent to avoid flooding the log
-      if (!isMeterAddress(address, paramId)) {
-        addLog('Received SET: address=0x$addressHex, paramId=0x${paramId.toRadixString(16)}, value=$value');
+      // Log raw meter values for debugging purposes
+      if (isMeterAddress(address, paramId)) {
+        // Use a separate debug flag if needed to reduce log volume
+        if (_logMessages.length < 5) { // Only log when buffer isn't too full
+          final rawHex = '0x${value.toRadixString(16).padLeft(8, '0').toUpperCase()}';
+          addLog('Raw meter value: $rawHex (${bytesToHexString(message.sublist(9, 13))})');
+        }
       }
       
       // Update UI based on the received message
       updateUIFromSetMessage(address, paramId, value);
     } catch (e) {
       addLog('Error processing SET message: $e');
+    }
+  }
+  
+  // Process a SET_PERCENT message
+  void processSetPercentMessage(List<int> message) {
+    try {
+      // Verify message length
+      // SET_PERCENT message structure: 0x8D + Address + ParamID + Value + Checksum
+      if (message.length < 13) {
+        addLog('SET_PERCENT message too short: ${bytesToHexString(message)}');
+        return;
+      }
+      
+      // Extract the address from the message
+      List<int> address = message.sublist(1, 7); // 6 bytes address
+      
+      // Extract parameter ID (2 bytes)
+      int paramId = (message[7] << 8) | message[8];
+      
+      // Extract value (4 bytes)
+      int value = 0;
+      value = (message[9] << 24) | (message[10] << 16) | (message[11] << 8) | message[12];
+      
+      // Convert to percentage (0-100) if needed before updating UI
+      updateUIFromSetMessage(address, paramId, value);
+    } catch (e) {
+      addLog('Error processing SET_PERCENT message: $e');
     }
   }
   
@@ -605,7 +981,7 @@ class _BSSControllerScreenState extends State<BSSControllerScreen> {
     }
   }
   
-  // Update UI based on received SET message
+  // Update UI based on received SET message with throttling for meters
   void updateUIFromSetMessage(List<int> address, int paramId, int value) {
     try {
       // Convert address and parameters to hex strings for comparison
@@ -623,7 +999,7 @@ class _BSSControllerScreenState extends State<BSSControllerScreen> {
         // Handle signed values
         double signedValue = value.toDouble();
         if (value > 0x7FFFFFFF) {
-          signedValue = value - 0x100000000;
+          signedValue = -(0x100000000 - value).toDouble();
         }
         
         double normalizedValue = (signedValue - minValue) / (maxValue - minValue);
@@ -633,7 +1009,7 @@ class _BSSControllerScreenState extends State<BSSControllerScreen> {
           faderValue = normalizedValue;
         });
         
-        addLog('Updated fader value: $normalizedValue');
+        addLog('Updated fader value: ${normalizedValue.toStringAsFixed(3)}');
       }
       
       // Check if it matches button parameter
@@ -648,7 +1024,7 @@ class _BSSControllerScreenState extends State<BSSControllerScreen> {
         addLog('Updated button state: ${value != 0}');
       }
       
-      // Check if it matches meter parameter
+      // Check if it matches meter parameter - with throttling
       String meterAddressHex = meterHiQnetAddressController.text.replaceAll("0x", "");
       int meterParamId = int.parse(meterParamIdController.text.replaceAll("0x", ""), radix: 16);
       
@@ -658,24 +1034,80 @@ class _BSSControllerScreenState extends State<BSSControllerScreen> {
         const double minDb = -80.0; // -80dB
         const double maxDb = 40.0;  // +40dB
         
-        // Handle signed values
+        // FIXED: Proper handling of signed values for meters
         double signedValue = value.toDouble();
+        final rawHex = '0x${value.toRadixString(16).padLeft(8, '0').toUpperCase()}';
+        
+        // Process correctly - even with SET_PERCENT messages
         if (value > 0x7FFFFFFF) {
-          signedValue = value - 0x100000000;
+          // Proper conversion from two's complement
+          signedValue = -(0x100000000 - value).toDouble();
+          
+          // Log raw negative values - these should be common for low meter readings
+          addLog('Raw negative meter value: $rawHex = $signedValue (converted from two\'s complement)');
+        } else if (value > 0x400000) {
+          // Any value over 40dB is suspicious - log it
+          addLog('Suspicious meter value (>+40dB): $rawHex');
+          
+          // Filter out extreme values that cause the jumping behavior
+          if (value >= 0x10000000) {
+            addLog('Filtering extreme meter value: $rawHex');
+            return; // Skip this update entirely
+          }
         }
         
-        // Convert to dB (value / 10000)
-        double dbValue = signedValue / 10000.0;
+        // Different scale factor depending on if it's a SET or SET_PERCENT message
+        double dbValue;
+        if (value >= -800000 && value <= 400000) {
+          // Normal SET message - scale factor is 10000
+          dbValue = signedValue / 10000.0;
+        } else if (value >= 0 && value <= 65535) {
+          // Likely a SET_PERCENT message - scale to dB range
+          dbValue = minDb + (signedValue / 65535.0) * (maxDb - minDb);
+        } else {
+          // Unknown format - log and use default scaling
+          addLog('Unusual meter value format: $rawHex');
+          dbValue = signedValue / 10000.0;
+        }
+        
+        // Ensure we don't go outside our expected range
         dbValue = dbValue.clamp(minDb, maxDb);
         
         // Normalize to 0.0-1.0 range
         double normalizedValue = (dbValue - minDb) / (maxDb - minDb);
         
-        setState(() {
-          meterValue = normalizedValue;
-        });
+        // Throttle UI updates based on time and value change
+        int currentTime = DateTime.now().millisecondsSinceEpoch;
+        bool significantChange = (normalizedValue - _lastMeterValue).abs() > 0.01;
         
-        addLog('Updated meter value: ${dbValue.toStringAsFixed(1)}dB (${(normalizedValue * 100).toStringAsFixed(1)}%)');
+        if (significantChange || (currentTime - _lastUIUpdateTime) >= _minUpdateInterval) {
+          setState(() {
+            meterValue = normalizedValue;
+          });
+          
+          _lastMeterValue = normalizedValue;
+          _lastUIUpdateTime = currentTime;
+          
+          // Log meter values for troubleshooting with frequency control
+          if (significantChange || (currentTime % 5000 < 50)) { // Log occasionally even without changes
+            addLog('Meter: raw=$value, dB=${dbValue.toStringAsFixed(1)}, normalized=${normalizedValue.toStringAsFixed(3)}');
+          }
+        }
+      }
+      
+      // Check if it matches source selector parameter
+      String sourceAddressHex = sourceHiQnetAddressController.text.replaceAll("0x", "");
+      int sourceParamId = int.parse(sourceParamIdController.text.replaceAll("0x", ""), radix: 16);
+      
+      if (addressHex.toUpperCase() == sourceAddressHex.toUpperCase() && paramId == sourceParamId) {
+        // Source selector is a multi-state parameter (0, 1, 2, etc.)
+        if (value >= 0 && value < numSourceOptions) {
+          setState(() {
+            sourceValue = value;
+          });
+          
+          addLog('Updated source selection: $sourceValue');
+        }
       }
     } catch (e) {
       addLog('Error updating UI from SET message: $e');
@@ -703,6 +1135,30 @@ class _BSSControllerScreenState extends State<BSSControllerScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('BSS Controller'),
+        actions: [
+          // Add a connection status indicator
+          Container(
+            padding: const EdgeInsets.all(8),
+            child: Row(
+              children: [
+                Container(
+                  width: 16,
+                  height: 16,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: isConnected ? Colors.green : 
+                           isConnecting ? Colors.orange : Colors.red,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  isConnected ? 'Connected' : 
+                  isConnecting ? 'Connecting...' : 'Disconnected'
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16.0),
@@ -710,386 +1166,585 @@ class _BSSControllerScreenState extends State<BSSControllerScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             // Connection settings
-            const Text('Connection Settings', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: ipAddressController,
-                    decoration: const InputDecoration(
-                      labelText: 'IP Address',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 16),
-                SizedBox(
-                  width: 120,
-                  child: TextField(
-                    controller: portController,
-                    decoration: const InputDecoration(
-                      labelText: 'Port',
-                      border: OutlineInputBorder(),
-                    ),
-                    keyboardType: TextInputType.number,
-                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            Row(
-              children: [
-                ElevatedButton(
-                  onPressed: isConnected ? null : connectToDevice,
-                  child: const Text('Connect'),
-                ),
-                const SizedBox(width: 16),
-                ElevatedButton(
-                  onPressed: isConnected ? disconnectFromDevice : null,
-                  child: const Text('Disconnect'),
-                ),
-                const SizedBox(width: 16),
-                Container(
-                  width: 16,
-                  height: 16,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: isConnected ? Colors.green : Colors.red,
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Text(isConnected ? 'Connected' : 'Disconnected'),
-              ],
-            ),
-            
-            const Divider(height: 32),
-            
-            // Fader control
-            const Text('Fader Control', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            TextField(
-              controller: faderHiQnetAddressController,
-              decoration: const InputDecoration(
-                labelText: 'HiQnet Address',
-                border: OutlineInputBorder(),
-                hintText: 'Example: 0x2D6803000100',
-              ),
-              onChanged: (_) => updateCommandStrings(),
-            ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: faderParamIdController,
-              decoration: const InputDecoration(
-                labelText: 'Param ID',
-                border: OutlineInputBorder(),
-                hintText: 'Example: 0x0',
-              ),
-              onChanged: (_) => updateCommandStrings(),
-            ),
-            const SizedBox(height: 16),
-            Row(
-              children: [
-                const Text('Fader Value:'),
-                Expanded(
-                  child: Slider(
-                    value: faderValue,
-                    onChanged: (value) {
-                      setState(() {
-                        faderValue = value;
-                      });
-                    },
-                    onChangeEnd: (value) {
-                      if (isConnected) {
-                        // Send new fader value to the device
-                        sendCommand(generateFaderCommand());
-                        
-                        // Re-subscribe to ensure we get updates
-                        try {
-                          final faderAddress = parseHiQnetAddress(faderHiQnetAddressController.text);
-                          final faderParamId = int.parse(faderParamIdController.text.replaceAll("0x", ""), radix: 16);
-                          sendCommand(generateSubscribeCommand(faderAddress, faderParamId));
-                        } catch (e) {
-                          addLog('Error re-subscribing to fader: $e');
-                        }
-                      }
-                    },
-                  ),
-                ),
-                SizedBox(
-                  width: 60,
-                  child: Text('${(faderValue * 100).toInt()}%'),
-                ),
-              ],
-            ),
-            
-            const Divider(height: 32),
-            
-            // Button control
-            const Text('Button Control', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            TextField(
-              controller: buttonHiQnetAddressController,
-              decoration: const InputDecoration(
-                labelText: 'HiQnet Address',
-                border: OutlineInputBorder(),
-                hintText: 'Example: 0x2D6803000100',
-              ),
-              onChanged: (_) => updateCommandStrings(),
-            ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: buttonParamIdController,
-              decoration: const InputDecoration(
-                labelText: 'Param ID',
-                border: OutlineInputBorder(),
-                hintText: 'Example: 0x1',
-              ),
-              onChanged: (_) => updateCommandStrings(),
-            ),
-            const SizedBox(height: 16),
-            Row(
-              children: [
-                const Text('Button State:'),
-                const SizedBox(width: 16),
-                Switch(
-                  value: buttonState,
-                  onChanged: (value) {
-                    setState(() {
-                      buttonState = value;
-                    });
-                    
-                    if (isConnected) {
-                      try {
-                        final address = parseHiQnetAddress(buttonHiQnetAddressController.text);
-                        final paramId = int.parse(buttonParamIdController.text.replaceAll("0x", ""), radix: 16);
-                        
-                        // Send button state command
-                        final command = generateSetCommand(address, paramId, buttonState ? 1 : 0);
-                        sendCommand(command);
-                        
-                        // Re-subscribe to ensure we get updates
-                        sendCommand(generateSubscribeCommand(address, paramId));
-                      } catch (e) {
-                        addLog('Error sending button command: $e');
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('Error sending button command: $e')),
-                        );
-                      }
-                    }
-                  },
-                ),
-                const SizedBox(width: 8),
-                Text(buttonState ? 'ON' : 'OFF'),
-              ],
-            ),
-            
-            const Divider(height: 32),
-            
-            // Meter control
-            const Text('Signal Meter', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            TextField(
-              controller: meterHiQnetAddressController,
-              decoration: const InputDecoration(
-                labelText: 'HiQnet Address',
-                border: OutlineInputBorder(),
-                hintText: 'Example: 0x2D6803000200',
-              ),
-              onChanged: (_) => updateCommandStrings(),
-            ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: meterParamIdController,
-              decoration: const InputDecoration(
-                labelText: 'Param ID',
-                border: OutlineInputBorder(),
-                hintText: 'Example: 0x0',
-              ),
-              onChanged: (_) => updateCommandStrings(),
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                const Text('Auto-refresh:'),
-                const SizedBox(width: 8),
-                Switch(
-                  value: autoRefreshMeter,
-                  onChanged: isConnected ? toggleAutoRefreshMeter : null,
-                ),
-                const SizedBox(width: 8),
-                Text(autoRefreshMeter ? 'ON' : 'OFF'),
-              ],
-            ),
-            const SizedBox(height: 8),
-            
-            // Meter visualization
-            Container(
-              height: 80,
-              decoration: BoxDecoration(
-                border: Border.all(color: Colors.grey),
-                borderRadius: BorderRadius.circular(4),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            Card(
+              elevation: 2,
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Connection Settings', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 16),
+                    Row(
                       children: [
-                        const Text('-80dB', style: TextStyle(fontSize: 12)),
-                        const Text('-40dB', style: TextStyle(fontSize: 12)),
-                        const Text('0dB', style: TextStyle(fontSize: 12)),
-                        const Text('+20dB', style: TextStyle(fontSize: 12)),
-                        const Text('+40dB', style: TextStyle(fontSize: 12)),
+                        Expanded(
+                          child: TextField(
+                            controller: ipAddressController,
+                            decoration: const InputDecoration(
+                              labelText: 'IP Address',
+                              border: OutlineInputBorder(),
+                              hintText: '192.168.0.20',
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        SizedBox(
+                          width: 120,
+                          child: TextField(
+                            controller: portController,
+                            decoration: const InputDecoration(
+                              labelText: 'Port',
+                              border: OutlineInputBorder(),
+                              hintText: '1023',
+                            ),
+                            keyboardType: TextInputType.number,
+                            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                          ),
+                        ),
                       ],
                     ),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        ElevatedButton(
+                          onPressed: isConnected || isConnecting ? null : connectToDevice,
+                          child: const Text('Connect'),
+                        ),
+                        const SizedBox(width: 16),
+                        ElevatedButton(
+                          onPressed: isConnected ? disconnectFromDevice : null,
+                          child: const Text('Disconnect'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            
+            const SizedBox(height: 16),
+            
+            // Meter visualization
+            Card(
+              elevation: 2,
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Signal Meter', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 16),
+                    
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: meterHiQnetAddressController,
+                            decoration: const InputDecoration(
+                              labelText: 'HiQnet Address',
+                              border: OutlineInputBorder(),
+                              hintText: 'Example: 0x2D6803000200',
+                            ),
+                            onChanged: (_) => updateCommandStrings(),
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        SizedBox(
+                          width: 120,
+                          child: TextField(
+                            controller: meterParamIdController,
+                            decoration: const InputDecoration(
+                              labelText: 'Param ID',
+                              border: OutlineInputBorder(),
+                              hintText: 'Example: 0x0',
+                            ),
+                            onChanged: (_) => updateCommandStrings(),
+                          ),
+                        ),
+                      ],
+                    ),
+                    
+                    const SizedBox(height: 16),
+                    
+                    // Meter Refresh Rate slider
+                    Row(
+                      children: [
+                        const Text('Meter Refresh Rate:'),
+                        Expanded(
+                          child: Slider(
+                            value: meterRefreshRateValue.toDouble(),
+                            min: 10,    // 10ms (very fast)
+                            max: 1000,  // 1000ms (1 second)
+                            divisions: 99,
+                            label: '${meterRefreshRateValue}ms',
+                            onChanged: (value) {
+                              setState(() {
+                                meterRefreshRateValue = value.round();
+                              });
+                            },
+                            onChangeEnd: (value) {
+                              // Resubscribe with new rate when slider is released
+                              if (isConnected && autoRefreshMeter) {
+                                startMeterRefreshTimer(meterRate: value.round());
+                              }
+                            },
+                          ),
+                        ),
+                        SizedBox(
+                          width: 80,
+                          child: Text('${meterRefreshRateValue}ms'),
+                        ),
+                      ],
+                    ),
+                    
+                    Row(
+                      children: [
+                        const Text('Auto-refresh:'),
+                        const SizedBox(width: 8),
+                        Switch(
+                          value: autoRefreshMeter,
+                          onChanged: isConnected ? toggleAutoRefreshMeter : null,
+                        ),
+                        const SizedBox(width: 8),
+                        Text(autoRefreshMeter ? 'ON' : 'OFF'),
+                      ],
+                    ),
+                    
+                    const SizedBox(height: 16),
+                    
+                    // Meter visualization - improved with smoother animation and peak hold
+                    Container(
+                      height: 90,
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Colors.grey),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                const Text('-80dB', style: TextStyle(fontSize: 12)),
+                                const Text('-40dB', style: TextStyle(fontSize: 12)),
+                                const Text('0dB', style: TextStyle(fontSize: 12)),
+                                const Text('+20dB', style: TextStyle(fontSize: 12)),
+                                const Text('+40dB', style: TextStyle(fontSize: 12)),
+                              ],
+                            ),
+                          ),
+                          Expanded(
+                            child: Padding(
+                              padding: const EdgeInsets.all(8.0),
+                              child: LayoutBuilder(
+                                builder: (context, constraints) {
+                                  // Calculate the width of the meter bar
+                                  final meterWidth = constraints.maxWidth * meterValue;
+                                  final dbValue = -80 + meterValue * 120;
+                                  
+                                  return Stack(
+                                    children: [
+                                      // Background with level markings
+                                      Container(
+                                        width: constraints.maxWidth,
+                                        decoration: BoxDecoration(
+                                          color: Colors.black12,
+                                          borderRadius: BorderRadius.circular(2),
+                                        ),
+                                        child: Row(
+                                          children: [
+                                            Container(width: constraints.maxWidth * (20/120), color: Colors.black.withAlpha(8)),
+                                            Container(width: constraints.maxWidth * (20/120), color: Colors.black.withAlpha(15)),
+                                            Container(width: constraints.maxWidth * (20/120), color: Colors.black.withAlpha(23)),
+                                            Container(width: constraints.maxWidth * (20/120), color: Colors.black.withAlpha(31)),
+                                            Container(width: constraints.maxWidth * (20/120), color: Colors.black.withAlpha(38)),
+                                            Container(width: constraints.maxWidth * (20/120), color: Colors.black.withAlpha(46)),
+                                          ],
+                                        ),
+                                      ),
+                                      // Meter bar with animated transition
+                                      AnimatedContainer(
+                                        duration: const Duration(milliseconds: 100),
+                                        width: meterWidth,
+                                        decoration: BoxDecoration(
+                                          color: getDbColor(meterValue),
+                                          borderRadius: BorderRadius.circular(2),
+                                        ),
+                                      ),
+                                      // Current value text
+                                      Positioned.fill(
+                                        child: Center(
+                                          child: Text(
+                                            '${dbValue.toStringAsFixed(1)} dB',
+                                            style: TextStyle(
+                                              fontWeight: FontWeight.bold,
+                                              color: meterValue > 0.4 ? Colors.white : Colors.black,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  );
+                                },
+                              ),
+                            ),
+                          ),
+                          // Numeric readout for additional verification
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 2.0),
+                            child: Text(
+                              'Rate: ${meterRefreshRateValue}ms   Value: ${(-80 + meterValue * 120).toStringAsFixed(1)}dB',
+                              style: const TextStyle(fontSize: 10),
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        ElevatedButton(
+                          onPressed: isConnected ? () {
+                            // Subscribe to the meter parameter
+                            startMeterRefreshTimer(meterRate: meterRefreshRateValue);
+                          } : null,
+                          child: const Text('Refresh Meter Now'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            
+            const SizedBox(height: 16),
+            
+            // Fader control
+            Card(
+              elevation: 2,
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Fader Control', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: faderHiQnetAddressController,
+                            decoration: const InputDecoration(
+                              labelText: 'HiQnet Address',
+                              border: OutlineInputBorder(),
+                              hintText: 'Example: 0x2D6803000100',
+                            ),
+                            onChanged: (_) => updateCommandStrings(),
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        SizedBox(
+                          width: 120,
+                          child: TextField(
+                            controller: faderParamIdController,
+                            decoration: const InputDecoration(
+                              labelText: 'Param ID',
+                              border: OutlineInputBorder(),
+                              hintText: 'Example: 0x0',
+                            ),
+                            onChanged: (_) => updateCommandStrings(),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        const Text('Fader Value:'),
+                        Expanded(
+                          child: Slider(
+                            value: faderValue,
+                            onChanged: (value) {
+                              setState(() {
+                                faderValue = value;
+                              });
+                            },
+                            onChangeEnd: (value) {
+                              if (isConnected) {
+                                // Send new fader value to the device
+                                sendCommand(generateFaderCommand());
+                              }
+                            },
+                          ),
+                        ),
+                        SizedBox(
+                          width: 60,
+                          child: Text('${(faderValue * 100).toInt()}%'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            
+            const SizedBox(height: 16),
+            
+            // Button control
+            Card(
+              elevation: 2,
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Button Control', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: buttonHiQnetAddressController,
+                            decoration: const InputDecoration(
+                              labelText: 'HiQnet Address',
+                              border: OutlineInputBorder(),
+                              hintText: 'Example: 0x2D6803000100',
+                            ),
+                            onChanged: (_) => updateCommandStrings(),
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        SizedBox(
+                          width: 120,
+                          child: TextField(
+                            controller: buttonParamIdController,
+                            decoration: const InputDecoration(
+                              labelText: 'Param ID',
+                              border: OutlineInputBorder(),
+                              hintText: 'Example: 0x1',
+                            ),
+                            onChanged: (_) => updateCommandStrings(),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        const Text('Button State:'),
+                        const SizedBox(width: 16),
+                        Switch(
+                          value: buttonState,
+                          onChanged: (value) {
+                            setState(() {
+                              buttonState = value;
+                            });
+                            
+                            if (isConnected) {
+                              try {
+                                final address = parseHiQnetAddress(buttonHiQnetAddressController.text);
+                                final paramId = int.parse(buttonParamIdController.text.replaceAll("0x", ""), radix: 16);
+                                
+                                // Send button state command
+                                final command = generateSetCommand(address, paramId, buttonState ? 1 : 0);
+                                sendCommand(command);
+                              } catch (e) {
+                                addLog('Error sending button command: $e');
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(content: Text('Error sending button command: $e')),
+                                );
+                              }
+                            }
+                          },
+                        ),
+                        const SizedBox(width: 8),
+                        Text(buttonState ? 'ON' : 'OFF'),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            
+            const SizedBox(height: 16),
+            
+            // Source Selector control
+            Card(
+              elevation: 2,
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Source Selector', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: sourceHiQnetAddressController,
+                            decoration: const InputDecoration(
+                              labelText: 'HiQnet Address',
+                              border: OutlineInputBorder(),
+                              hintText: 'Example: 0x2D6803000300',
+                            ),
+                            onChanged: (_) => updateCommandStrings(),
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        SizedBox(
+                          width: 120,
+                          child: TextField(
+                            controller: sourceParamIdController,
+                            decoration: const InputDecoration(
+                              labelText: 'Param ID',
+                              border: OutlineInputBorder(),
+                              hintText: 'Example: 0x0',
+                            ),
+                            onChanged: (_) => updateCommandStrings(),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        const Text('Source Input:'),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: DropdownButtonFormField<int>(
+                            value: sourceValue,
+                            decoration: const InputDecoration(
+                              border: OutlineInputBorder(),
+                              contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                            ),
+                            items: List.generate(numSourceOptions, (index) {
+                              return DropdownMenuItem<int>(
+                                value: index,
+                                child: Text('Input ${index + 1}'),
+                              );
+                            }),
+                            onChanged: (value) {
+                              if (value != null) {
+                                setState(() {
+                                  sourceValue = value;
+                                });
+                                
+                                if (isConnected) {
+                                  try {
+                                    final address = parseHiQnetAddress(sourceHiQnetAddressController.text);
+                                    final paramId = int.parse(sourceParamIdController.text.replaceAll("0x", ""), radix: 16);
+                                    
+                                    // Send source selection command
+                                    final command = generateSetCommand(address, paramId, sourceValue);
+                                    sendCommand(command);
+                                    
+                                    // Update the command string display
+                                    setState(() {
+                                      sourceSelectString = bytesToHexString(command);
+                                    });
+                                  } catch (e) {
+                                    addLog('Error sending source command: $e');
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(content: Text('Error sending source command: $e')),
+                                    );
+                                  }
+                                }
+                              }
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            
+            const SizedBox(height: 16),
+            
+            // Command strings
+            ExpansionTile(
+              title: const Text('Command Strings', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              initiallyExpanded: false,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('Fader Max String:'),
+                      SelectableText(faderMaxString),
+                      const SizedBox(height: 8),
+                      const Text('Fader Min String:'),
+                      SelectableText(faderMinString),
+                      const SizedBox(height: 8),
+                      const Text('Button On:'),
+                      SelectableText(buttonOnString),
+                      const SizedBox(height: 8),
+                      const Text('Button Off:'),
+                      SelectableText(buttonOffString),
+                      const SizedBox(height: 8),
+                      const Text('Meter Subscribe:'),
+                      SelectableText(meterSubscribeString),
+                      const SizedBox(height: 8),
+                      const Text('Source Select:'),
+                      SelectableText(sourceSelectString),
+                      
+                      const SizedBox(height: 16),
+                      ElevatedButton(
+                        onPressed: updateCommandStrings,
+                        child: const Text('Update Command Strings'),
+                      ),
+                    ],
                   ),
-                  Expanded(
-                    child: Padding(
-                      padding: const EdgeInsets.all(8.0),
-                      child: LayoutBuilder(
-                        builder: (context, constraints) {
-                          // Calculate the width of the meter bar
-                          final meterWidth = constraints.maxWidth * meterValue;
-                          
-                          return Stack(
-                            children: [
-                              // Background
-                              Container(
-                                width: constraints.maxWidth,
-                                decoration: BoxDecoration(
-                                  color: Colors.black12,
-                                  borderRadius: BorderRadius.circular(2),
-                                ),
-                              ),
-                              // Meter bar
-                              Container(
-                                width: meterWidth,
-                                decoration: BoxDecoration(
-                                  color: getDbColor(meterValue),
-                                  borderRadius: BorderRadius.circular(2),
-                                ),
-                              ),
-                              // Current value text
-                              Positioned.fill(
-                                child: Center(
-                                  child: Text(
-                                    '${(-80 + meterValue * 120).toStringAsFixed(1)} dB',
-                                    style: TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                      color: meterValue > 0.4 ? Colors.white : Colors.black,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ],
+                ),
+              ],
+            ),
+            
+            const SizedBox(height: 16),
+            
+            // Log section
+            ExpansionTile(
+              title: const Text('Log', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              initiallyExpanded: true,
+              children: [
+                Container(
+                  height: 200,
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    border: Border.all(color: Colors.grey),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: _logMessages.isEmpty 
+                    ? const Text(
+                        'No logs yet. Connect to a device to see communications.',
+                        style: TextStyle(fontStyle: FontStyle.italic),
+                      )
+                    : ListView.builder(
+                        itemCount: _logMessages.length,
+                        itemBuilder: (context, index) {
+                          return Text(
+                            _logMessages[index],
+                            style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
                           );
                         },
                       ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 8),
-            const Text('Meter Subscribe HEX Command:'),
-            SelectableText(meterSubscribeString),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                ElevatedButton(
-                  onPressed: isConnected ? () {
-                    // Subscribe to the meter parameter
-                    try {
-                      final meterAddress = parseHiQnetAddress(meterHiQnetAddressController.text);
-                      final meterParamId = int.parse(meterParamIdController.text.replaceAll("0x", ""), radix: 16);
-                      final command = generateSubscribeCommand(meterAddress, meterParamId);
-                      sendCommand(command);
-                      setState(() {
-                        meterSubscribeString = bytesToHexString(command);
-                      });
-                      addLog('Manually subscribed to meter parameter');
-                    } catch (e) {
-                      addLog('Error subscribing to meter: $e');
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('Error subscribing to meter: $e')),
-                      );
-                    }
-                  } : null,
-                  child: const Text('Refresh Meter Now'),
                 ),
-                const SizedBox(width: 16),
+                const SizedBox(height: 8),
                 ElevatedButton(
-                  onPressed: updateCommandStrings,
-                  child: const Text('Update HEX Commands'),
+                  onPressed: () {
+                    setState(() {
+                      _logMessages.clear();
+                    });
+                  },
+                  child: const Text('Clear Log'),
                 ),
               ],
-            ),
-            
-            const Divider(height: 32),
-            
-            // Command strings
-            const Text('Command Strings', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            const Text('Fader Max String:'),
-            SelectableText(faderMaxString),
-            const SizedBox(height: 8),
-            const Text('Fader Min String:'),
-            SelectableText(faderMinString),
-            const SizedBox(height: 8),
-            const Text('Button On:'),
-            SelectableText(buttonOnString),
-            const SizedBox(height: 8),
-            const Text('Button Off:'),
-            SelectableText(buttonOffString),
-            const SizedBox(height: 8),
-            const Text('Meter Subscribe:'),
-            SelectableText(meterSubscribeString),
-            
-            const SizedBox(height: 16),
-            Row(
-              children: [
-                ElevatedButton(
-                  onPressed: updateCommandStrings,
-                  child: const Text('Update Command Strings'),
-                ),
-                const SizedBox(width: 16),
-                ElevatedButton(
-                  onPressed: isConnected ? subscribeToParameters : null,
-                  child: const Text('Refresh All States'),
-                ),
-              ],
-            ),
-            
-            const Divider(height: 32),
-            
-            // Log section
-            const Text('Log', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            Container(
-              height: 200,
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                border: Border.all(color: Colors.grey),
-                borderRadius: BorderRadius.circular(4),
-              ),
-              child: _logMessages.isEmpty 
-                ? const Text(
-                    'No logs yet. Connect to a device to see communications.',
-                    style: TextStyle(fontStyle: FontStyle.italic),
-                  )
-                : ListView.builder(
-                    itemCount: _logMessages.length,
-                    itemBuilder: (context, index) {
-                      return Text(
-                        _logMessages[index],
-                        style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
-                      );
-                    },
-                  ),
             ),
           ],
         ),
