@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:isolate';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'panel_loader_screen.dart';
 
 void main() {
   runApp(const MyApp());
@@ -1214,6 +1215,16 @@ class _BSSControllerScreenState extends State<BSSControllerScreen> {
                         ElevatedButton(
                           onPressed: isConnected ? disconnectFromDevice : null,
                           child: const Text('Disconnect'),
+                        ),
+                        const SizedBox(width: 16),
+                        ElevatedButton(
+                          onPressed: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(builder: (context) => const PanelLoaderScreen()),
+                            );
+                          },
+                          child: const Text('Open Panel Loader'),
                         ),
                       ],
                     ),
