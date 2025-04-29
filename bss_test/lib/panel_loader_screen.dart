@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import 'panel_parser.dart';
 import 'models/panel_model.dart';
-import 'models/control_model.dart';
+import 'models/control_types.dart';  // Added this import
 
 class PanelLoaderScreen extends StatefulWidget {
-  const PanelLoaderScreen({Key? key}) : super(key: key);
+  const PanelLoaderScreen({super.key});
 
   @override
   State<PanelLoaderScreen> createState() => _PanelLoaderScreenState();
@@ -54,6 +54,13 @@ class _PanelLoaderScreenState extends State<PanelLoaderScreen> {
               Text('Panel: ${_loadedPanel!.name}'),
               Text('Size: ${_loadedPanel!.size.width.toInt()} x ${_loadedPanel!.size.height.toInt()}'),
               Text('Controls: ${_loadedPanel!.controls.length}'),
+              
+              // Add count by control type
+              Text('Buttons: ${_loadedPanel!.findControlsByType(ControlType.button).length}'),
+              Text('Faders: ${_loadedPanel!.findControlsByType(ControlType.fader).length}'),
+              Text('Meters: ${_loadedPanel!.findControlsByType(ControlType.meter).length}'),
+              Text('Selectors: ${_loadedPanel!.findControlsByType(ControlType.selector).length}'),
+              
               const SizedBox(height: 20),
               Expanded(
                 child: ListView.builder(
@@ -62,7 +69,15 @@ class _PanelLoaderScreenState extends State<PanelLoaderScreen> {
                     final control = _loadedPanel!.controls[index];
                     return ListTile(
                       title: Text(control.name),
-                      subtitle: Text('${control.type} at ${control.position.dx.toInt()},${control.position.dy.toInt()}'),
+                      subtitle: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('${control.type} at ${control.position.dx.toInt()},${control.position.dy.toInt()}'),
+                          if (control.stateVariables.isNotEmpty)
+                            Text('Address: ${control.getPrimaryAddress() ?? "None"}, Param: ${control.getPrimaryParameterId() ?? "None"}'),
+                        ],
+                      ),
+                      dense: true,
                     );
                   },
                 ),

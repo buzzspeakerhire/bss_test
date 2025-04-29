@@ -4,6 +4,7 @@ import 'package:xml/xml.dart';
 import 'package:file_picker/file_picker.dart';
 import 'models/panel_model.dart';
 import 'models/control_model.dart';
+import 'models/control_types.dart';  // Added this import
 
 class PanelParser {
   /// Loads a panel file from device storage and returns the parsed PanelModel
@@ -15,7 +16,7 @@ class PanelParser {
         allowMultiple: false,
         withData: false,
         withReadStream: false,
-        allowCompression: false,
+        // Removed allowCompression since it's deprecated
       );
 
       if (result == null || result.files.isEmpty || result.files.first.path == null) {
@@ -64,6 +65,7 @@ class PanelParser {
         backgroundColor: panel.backgroundColor,
         foregroundColor: panel.foregroundColor,
         controls: controls,
+        properties: panel.properties,
       );
     } catch (e) {
       debugPrint('Error parsing panel XML: $e');
@@ -77,8 +79,22 @@ class PanelParser {
     debugPrint('Size: ${panel.size.width.toInt()} x ${panel.size.height.toInt()}');
     debugPrint('Controls: ${panel.controls.length}');
     
-    for (var control in panel.controls) {
+    // Count by control type
+    final buttonCount = panel.findControlsByType(ControlType.button).length;
+    final faderCount = panel.findControlsByType(ControlType.fader).length;
+    final meterCount = panel.findControlsByType(ControlType.meter).length;
+    final selectorCount = panel.findControlsByType(ControlType.selector).length;
+    
+    debugPrint('Control types: Buttons: $buttonCount, Faders: $faderCount, Meters: $meterCount, Selectors: $selectorCount');
+    
+    // Print the first few controls as examples
+    final maxControls = panel.controls.length > 5 ? 5 : panel.controls.length;
+    for (var i = 0; i < maxControls; i++) {
+      final control = panel.controls[i];
       debugPrint('- ${control.name}: ${control.type} at ${control.position.dx.toInt()},${control.position.dy.toInt()}');
+      if (control.stateVariables.isNotEmpty) {
+        debugPrint('  Address: ${control.getPrimaryAddress()}, Param: ${control.getPrimaryParameterId()}');
+      }
     }
   }
 }

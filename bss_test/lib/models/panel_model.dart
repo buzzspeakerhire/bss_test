@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:xml/xml.dart';
 import 'control_model.dart';
+import 'control_types.dart';
 
 class PanelModel {
   final String name;
@@ -10,6 +11,7 @@ class PanelModel {
   final Color backgroundColor;
   final Color foregroundColor;
   final List<ControlModel> controls;
+  final Map<String, dynamic> properties;
 
   PanelModel({
     required this.name,
@@ -19,10 +21,11 @@ class PanelModel {
     required this.backgroundColor,
     required this.foregroundColor,
     required this.controls,
+    this.properties = const {},
   });
 
   factory PanelModel.fromXmlElement(XmlElement element) {
-    // Basic parsing of panel attributes - will be expanded later
+    // Basic parsing of panel attributes
     final name = element.getAttribute('Name') ?? '';
     final text = element.getAttribute('Text') ?? '';
     final version = element.getAttribute('Version') ?? '';
@@ -39,7 +42,19 @@ class PanelModel {
     final backgroundColor = _parseColor(bgColorStr);
     final foregroundColor = _parseColor(fgColorStr);
     
-    // For now, return an empty list of controls
+    // Extract panel properties
+    Map<String, dynamic> properties = {};
+    
+    // Parse ExtraFormProperties if present
+    final extraPropsElement = element.findElements('ExtraFormProperties').firstOrNull;
+    if (extraPropsElement != null) {
+      for (var prop in extraPropsElement.childElements) {
+        final propName = prop.name.local;
+        final propValue = prop.innerText;
+        properties[propName] = propValue;
+      }
+    }
+    
     return PanelModel(
       name: name,
       text: text,
@@ -47,15 +62,28 @@ class PanelModel {
       size: size,
       backgroundColor: backgroundColor,
       foregroundColor: foregroundColor,
-      controls: [], // Will be populated in a later phase
+      controls: [], // Will be populated separately
+      properties: properties,
     );
   }
   
+  // Color parsing helper
   static Color _parseColor(String colorStr) {
     // Handle named colors
     if (!colorStr.contains(',')) {
-      // This is a named color, we'll return a default for now
-      return Colors.grey;
+      // This is a named color
+      switch (colorStr.toLowerCase()) {
+        case 'transparent': return Colors.transparent;
+        case 'black': return Colors.black;
+        case 'white': return Colors.white;
+        case 'red': return Colors.red;
+        case 'green': return Colors.green;
+        case 'blue': return Colors.blue;
+        case 'yellow': return Colors.yellow;
+        case 'whitesmoke': return const Color(0xFFF5F5F5);
+        case 'darkgray': return Colors.grey.shade700;
+        default: return Colors.grey; // Default for unknown named colors
+      }
     }
     
     // Parse RGB or RGBA colors
@@ -66,5 +94,25 @@ class PanelModel {
       return Color.fromRGBO(parts[0], parts[1], parts[2], parts[3] / 255.0);
     }
     return Colors.grey;
+  }
+  
+  // Helper methods to find controls by different criteria
+  ControlModel? findControlByName(String name) {
+    try {
+      return controls.firstWhere((control) => control.name == name);
+    } catch (_) {
+      return null;
+    }
+  }
+  
+  List<ControlModel> findControlsByType(ControlType type) {
+    return controls.where((control) => control.controlType == type).toList();
+  }
+  
+  List<ControlModel> findControlsByAddress(String address) {
+    return controls.where((control) {
+      final controlAddress = control.getPrimaryAddress();
+      return controlAddress != null && controlAddress == address;
+    }).toList();
   }
 }

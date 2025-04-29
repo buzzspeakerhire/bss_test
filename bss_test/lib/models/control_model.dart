@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:xml/xml.dart';
 import 'control_types.dart';
+import 'state_variable_item.dart';
 
 class ControlModel {
   final String name;
@@ -12,9 +13,9 @@ class ControlModel {
   final Color backgroundColor;
   final Color foregroundColor;
   
-  // Properties for state variables and other control-specific attributes
+  // Complex properties
   final Map<String, dynamic> properties;
-  final Map<String, dynamic> stateVariables;
+  final List<StateVariableItem> stateVariables;
 
   ControlModel({
     required this.name,
@@ -26,7 +27,7 @@ class ControlModel {
     required this.backgroundColor,
     required this.foregroundColor,
     this.properties = const {},
-    this.stateVariables = const {},
+    this.stateVariables = const [],
   });
 
   factory ControlModel.fromXmlElement(XmlElement element) {
@@ -61,7 +62,61 @@ class ControlModel {
     // Determine control type
     ControlType controlType = _determineControlType(type);
     
-    // For now, return basic properties - we'll expand this later
+    // Parse complex properties
+    Map<String, dynamic> properties = {};
+    List<StateVariableItem> stateVariables = [];
+    
+    // Find ComplexProperties elements
+    final complexPropertiesList = element.findElements('ComplexProperties');
+    for (var complexProps in complexPropertiesList) {
+      final tag = complexProps.getAttribute('Tag') ?? '';
+      
+      // Handle state variables
+      if (tag == 'HProSVControl') {
+        final stateVarItems = complexProps.findElements('StateVariableItems').firstOrNull;
+        if (stateVarItems != null) {
+          final items = stateVarItems.findElements('StateVariableItem');
+          for (var item in items) {
+            stateVariables.add(StateVariableItem.fromXmlElement(item));
+          }
+        }
+      } 
+      // Handle DiscreteControl (for ComboBox)
+      else if (tag == 'HProDiscreteControl') {
+        final userList = complexProps.findElements('UserList').firstOrNull;
+        if (userList != null) {
+          final items = userList.findElements('StringList');
+          List<Map<String, String>> options = [];
+          
+          for (var item in items) {
+            options.add({
+              'value': item.getAttribute('Value') ?? '',
+              'label': item.getAttribute('Label') ?? ''
+            });
+          }
+          
+          properties['options'] = options;
+        }
+      }
+      // Handle other complex properties by tag
+      else {
+        // Store the XML string for advanced processing later
+        properties[tag] = complexProps.toXmlString();
+      }
+    }
+    
+    // Parse ControlProperties for additional settings
+    final controlPropsElement = element.findElements('ControlProperties').firstOrNull;
+    if (controlPropsElement != null) {
+      Map<String, String> controlProps = {};
+      for (var prop in controlPropsElement.childElements) {
+        final propName = prop.name.local;
+        final propValue = prop.innerText;
+        controlProps[propName] = propValue;
+      }
+      properties['controlProperties'] = controlProps;
+    }
+    
     return ControlModel(
       name: name,
       type: type,
@@ -71,14 +126,27 @@ class ControlModel {
       size: size,
       backgroundColor: backgroundColor,
       foregroundColor: foregroundColor,
+      properties: properties,
+      stateVariables: stateVariables,
     );
   }
   
   static Color _parseColor(String colorStr) {
     // Handle named colors
     if (!colorStr.contains(',')) {
-      // This is a named color, we'll return a default for now
-      return Colors.grey;
+      // This is a named color
+      switch (colorStr.toLowerCase()) {
+        case 'transparent': return Colors.transparent;
+        case 'black': return Colors.black;
+        case 'white': return Colors.white;
+        case 'red': return Colors.red;
+        case 'green': return Colors.green;
+        case 'blue': return Colors.blue;
+        case 'yellow': return Colors.yellow;
+        case 'whitesmoke': return const Color(0xFFF5F5F5);
+        case 'darkgray': return Colors.grey.shade700;
+        default: return Colors.grey; // Default for unknown named colors
+      }
     }
     
     // Parse RGB or RGBA colors
@@ -99,5 +167,17 @@ class ControlModel {
     if (typeString.contains('Annotation')) return ControlType.label;
     if (typeString.contains('Rectangle')) return ControlType.rectangle;
     return ControlType.unknown;
+  }
+  
+  // Helper method to get protocol address for this control
+  String? getPrimaryAddress() {
+    if (stateVariables.isEmpty) return null;
+    return stateVariables.first.hiQnetAddress;
+  }
+  
+  // Helper method to get parameter ID for this control
+  String? getPrimaryParameterId() {
+    if (stateVariables.isEmpty) return null;
+    return stateVariables.first.parameterID;
   }
 }
