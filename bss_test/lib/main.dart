@@ -4,6 +4,7 @@ import 'dart:isolate';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'panel_loader_screen.dart';
+import 'fader_communication.dart';  // Added import for fader communication
 
 void main() {
   runApp(const MyApp());
@@ -94,11 +95,42 @@ class _BSSControllerScreenState extends State<BSSControllerScreen> {
   final List<String> _logMessages = [];
   final int _maxLogMessages = 20;
 
+  // Added for fader communication
+  final _faderCommunication = FaderCommunication();
+
   @override
   void initState() {
     super.initState();
     updateCommandStrings();
     _setupMessageProcessor();
+    
+    // Listen for fader events from panel viewer
+    _faderCommunication.onFaderMoved.listen((data) {
+      if (!isConnected || socket == null) return;
+      
+      try {
+        final addressHex = data['address'] as String;
+        final paramIdHex = data['paramId'] as String;
+        final value = data['value'] as double;
+        
+        // Parse the address and parameter ID
+        final address = parseHiQnetAddress(addressHex);
+        final paramId = int.parse(paramIdHex.replaceAll("0x", ""), radix: 16);
+        
+        // Convert normalized value (0.0-1.0) to device value range
+        final double maxValue = 0x0186A0.toDouble(); // 100000
+        final double minValue = -280617.0; // 0xFFFBB7D7 as signed integer
+        final int deviceValue = (minValue + value * (maxValue - minValue)).toInt();
+        
+        // Generate and send the command
+        final command = generateSetCommand(address, paramId, deviceValue & 0xFFFFFFFF);
+        sendCommand(command);
+        
+        addLog('Sent fader command from panel: $addressHex, $paramIdHex, $value');
+      } catch (e) {
+        addLog('Error sending fader command from panel: $e');
+      }
+    });
   }
 
   Future<void> _setupMessageProcessor() async {
@@ -299,6 +331,9 @@ class _BSSControllerScreenState extends State<BSSControllerScreen> {
         isConnecting = false;
         _buffer.clear(); // Clear buffer on new connection
         _lastUIUpdateTime = DateTime.now().millisecondsSinceEpoch; // Reset timer
+        
+        // Update fader communication state
+        _faderCommunication.setConnectionState(true);
       });
       
       addLog('Connected to $ip:$port');
@@ -376,6 +411,9 @@ class _BSSControllerScreenState extends State<BSSControllerScreen> {
     setState(() {
       isConnected = false;
       isConnecting = false;
+      
+      // Update fader communication state
+      _faderCommunication.setConnectionState(false);
     });
     
     addLog('Disconnected from device');
@@ -1009,6 +1047,9 @@ class _BSSControllerScreenState extends State<BSSControllerScreen> {
         setState(() {
           faderValue = normalizedValue;
         });
+        
+        // Update panel faders with this address/paramId
+        _faderCommunication.updateFaderFromDevice('0x$addressHex', '0x${paramId.toRadixString(16)}', normalizedValue);
         
         addLog('Updated fader value: ${normalizedValue.toStringAsFixed(3)}');
       }
