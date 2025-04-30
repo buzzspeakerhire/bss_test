@@ -5,7 +5,7 @@ import 'models/control_types.dart';
 import 'panel_viewer.dart';
 import 'faders_only_panel_viewer.dart';
 import 'scalable_panel_viewer.dart';
-import 'fixed_faders_viewer.dart'; // Import the new fixed faders viewer
+import 'fixed_faders_viewer.dart';
 
 class PanelLoaderScreen extends StatefulWidget {
   const PanelLoaderScreen({super.key});
@@ -77,7 +77,6 @@ class _PanelLoaderScreenState extends State<PanelLoaderScreen> {
     );
   }
   
-  // New method for the fixed faders viewer
   void _viewFixedFaders() {
     if (_loadedPanel == null) return;
     
@@ -111,8 +110,9 @@ class _PanelLoaderScreenState extends State<PanelLoaderScreen> {
                   backgroundColor: Theme.of(context).colorScheme.primaryContainer,
                   padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
                 ),
-                child: const Text('View Optimized Faders (Recommended)'),
+                child: const Text('View Optimized Faders'),
               ),
+              
               const SizedBox(height: 16),
               const Text('Other View Options:', style: TextStyle(fontWeight: FontWeight.bold)),
               const SizedBox(height: 8),
@@ -123,11 +123,11 @@ class _PanelLoaderScreenState extends State<PanelLoaderScreen> {
                 children: [
                   ElevatedButton(
                     onPressed: _viewPanel,
-                    child: const Text('Full Panel'),
+                    child: const Text('Original Panel'),
                   ),
                   ElevatedButton(
                     onPressed: _viewFadersOnly,
-                    child: const Text('Faders Only'),
+                    child: const Text('Original Faders'),
                   ),
                   ElevatedButton(
                     onPressed: _viewScalablePanel,

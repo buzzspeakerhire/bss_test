@@ -46,36 +46,19 @@ class _BareFaderRendererState extends State<BareFaderRenderer> {
 
   @override
   Widget build(BuildContext context) {
-    final isVertical = widget.control.type.toLowerCase().contains("v");
-    
-    // Extra simple - just the slider
-    if (isVertical) {
-      return RotatedBox(
-        quarterTurns: 3,
-        child: SliderTheme(
-          data: SliderThemeData(
-            trackHeight: 25.0, // Make the track taller for easier interaction
-            thumbShape: RoundSliderThumbShape(enabledThumbRadius: 15.0), // Bigger thumb
-            overlayShape: RoundSliderOverlayShape(overlayRadius: 20.0), // Bigger tap area
-          ),
-          child: Slider(
-            value: _value,
-            onChangeStart: (_) => _isDragging = true,
-            onChanged: (value) => setState(() => _value = value),
-            onChangeEnd: (value) {
-              _isDragging = false;
-              _reportFaderValue(value);
-            },
-          ),
-        ),
-      );
-    } else {
-      return SliderTheme(
-        data: SliderThemeData(
-          trackHeight: 25.0, // Make the track taller
-          thumbShape: RoundSliderThumbShape(enabledThumbRadius: 15.0), // Bigger thumb
-          overlayShape: RoundSliderOverlayShape(overlayRadius: 20.0), // Bigger tap area
-        ),
+    // Always render as vertical sliders
+    return SliderTheme(
+      data: SliderThemeData(
+        trackHeight: 25.0, // Make the track taller for easier interaction
+        thumbShape: RoundSliderThumbShape(enabledThumbRadius: 15.0), // Bigger thumb
+        overlayShape: RoundSliderOverlayShape(overlayRadius: 20.0), // Bigger tap area
+        trackShape: const RectangularSliderTrackShape(),
+        thumbColor: Colors.white,
+        activeTrackColor: Colors.deepPurple,
+        inactiveTrackColor: Colors.white,
+      ),
+      child: RotatedBox(
+        quarterTurns: 3, // Keep slider vertical
         child: Slider(
           value: _value,
           onChangeStart: (_) => _isDragging = true,
@@ -85,8 +68,8 @@ class _BareFaderRendererState extends State<BareFaderRenderer> {
             _reportFaderValue(value);
           },
         ),
-      );
-    }
+      ),
+    );
   }
 
   void _reportFaderValue(double value) {
@@ -95,6 +78,7 @@ class _BareFaderRendererState extends State<BareFaderRenderer> {
     
     if (address != null && paramId != null) {
       _communication.reportFaderMoved(address, paramId, value);
+      debugPrint('Fader ${widget.control.name} value: $value');
     }
   }
 }

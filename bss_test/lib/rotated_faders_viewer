@@ -1,0 +1,138 @@
+import 'package:flutter/material.dart';
+import 'models/panel_model.dart';
+import 'models/control_types.dart';
+import 'control_renderers/bare_fader_renderer.dart';
+
+class RotatedFadersViewer extends StatefulWidget {
+  final PanelModel panel;
+  
+  const RotatedFadersViewer({
+    super.key,
+    required this.panel,
+  });
+
+  @override
+  State<RotatedFadersViewer> createState() => _RotatedFadersViewerState();
+}
+
+class _RotatedFadersViewerState extends State<RotatedFadersViewer> {
+  // Whether to rotate the view
+  bool _shouldRotate = false;
+  double _scaleFactor = 1.0;
+  
+  @override
+  void initState() {
+    super.initState();
+    
+    // Determine if rotation is needed based on original panel dimensions
+    _shouldRotate = widget.panel.size.width > widget.panel.size.height;
+    debugPrint('Panel dimensions: ${widget.panel.size.width} x ${widget.panel.size.height}');
+    debugPrint('Should rotate: $_shouldRotate');
+  }
+  
+  @override
+  Widget build(BuildContext context) {
+    // Get only the faders from the panel
+    final faders = widget.panel.findControlsByType(ControlType.fader);
+    
+    // Calculate available screen dimensions
+    final screenWidth = MediaQuery.of(context).size.width;
+    final screenHeight = MediaQuery.of(context).size.height - 
+                         kToolbarHeight - 
+                         MediaQuery.of(context).padding.top - 
+                         MediaQuery.of(context).padding.bottom - 
+                         30; // Extra padding for the scale indicator
+    
+    // Calculate the bounds of the faders section
+    double minX = double.infinity;
+    double minY = double.infinity;
+    double maxX = 0;
+    double maxY = 0;
+    
+    for (final fader in faders) {
+      minX = fader.position.dx < minX ? fader.position.dx : minX;
+      minY = fader.position.dy < minY ? fader.position.dy : minY;
+      maxX = (fader.position.dx + fader.size.width) > maxX ? (fader.position.dx + fader.size.width) : maxX;
+      maxY = (fader.position.dy + fader.size.height) > maxY ? (fader.position.dy + fader.size.height) : maxY;
+    }
+    
+    // Calculate fader section dimensions
+    final sectionWidth = maxX - minX;
+    final sectionHeight = maxY - minY;
+    
+    // Determine appropriate scale factor based on orientation
+    if (_shouldRotate) {
+      // If rotated, calculate based on swapped dimensions
+      final scaleX = screenWidth / sectionHeight;
+      final scaleY = screenHeight / sectionWidth;
+      _scaleFactor = scaleX < scaleY ? scaleX : scaleY;
+    } else {
+      // Otherwise, use normal dimensions
+      final scaleX = screenWidth / sectionWidth;
+      final scaleY = screenHeight / sectionHeight;
+      _scaleFactor = scaleX < scaleY ? scaleX : scaleY;
+    }
+    
+    // Apply reasonable scale limits
+    _scaleFactor = _scaleFactor.clamp(0.1, 2.0);
+    
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('${_shouldRotate ? "Rotated" : ""} Faders: ${widget.panel.name}'),
+      ),
+      body: Container(
+        color: Colors.black,
+        width: double.infinity,
+        height: double.infinity,
+        child: Center(
+          child: _shouldRotate
+              ? RotatedBox(
+                  quarterTurns: 1, // 90 degrees clockwise
+                  child: _buildFaderSection(faders, minX, minY, _scaleFactor),
+                )
+              : _buildFaderSection(faders, minX, minY, _scaleFactor),
+        ),
+      ),
+      bottomSheet: Container(
+        color: Colors.black,
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Center(
+          child: Text(
+            'Optimized view: ${(_scaleFactor * 100).toStringAsFixed(0)}% scale',
+            style: const TextStyle(color: Colors.white70, fontSize: 12),
+          ),
+        ),
+      ),
+    );
+  }
+  
+  // Build the fader section with precise positioning
+  Widget _buildFaderSection(List<dynamic> faders, double minX, double minY, double scale) {
+    return Transform.scale(
+      scale: scale,
+      child: SizedBox(
+        width: widget.panel.size.width,
+        height: widget.panel.size.height,
+        child: Stack(
+          children: [
+            // Use the original panel background
+            Container(
+              width: widget.panel.size.width,
+              height: widget.panel.size.height,
+              color: widget.panel.backgroundColor,
+            ),
+            
+            // Position each fader exactly where it is in the original panel
+            ...faders.map((fader) => Positioned(
+              left: fader.position.dx,
+              top: fader.position.dy,
+              width: fader.size.width,
+              height: fader.size.height,
+              child: BareFaderRenderer(control: fader),
+            )),
+          ],
+        ),
+      ),
+    );
+  }
+}
