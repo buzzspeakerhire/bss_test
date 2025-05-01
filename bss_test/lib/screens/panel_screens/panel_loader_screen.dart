@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
-import 'panel_parser.dart';
-import 'models/panel_model.dart';
-import 'models/control_types.dart';
+import '../../panel_parser.dart';
+import '../../models/panel_model.dart';
+import '../../models/control_types.dart';
 import 'panel_viewer.dart';
 import 'faders_only_panel_viewer.dart';
 import 'scalable_panel_viewer.dart';

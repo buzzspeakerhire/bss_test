@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
-import 'models/panel_model.dart';
-import 'models/control_types.dart';
-import 'control_renderers/bare_fader_renderer.dart';
-import 'control_renderers/selector_renderer.dart';
+import '../../models/panel_model.dart';
+import '../../models/control_types.dart';
+import '../../control_renderers/bare_fader_renderer.dart';
+import '../../control_renderers/selector_renderer.dart';
 
 class FixedFadersViewer extends StatefulWidget {
   final PanelModel panel;

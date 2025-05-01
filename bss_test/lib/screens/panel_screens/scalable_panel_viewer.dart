@@ -1,9 +1,8 @@
 import 'package:flutter/material.dart';
-import 'models/panel_model.dart';
-import 'models/control_types.dart';
-import 'control_renderers/bare_fader_renderer.dart';
-import 'control_renderers/control_renderer_factory.dart';
-import 'helpers/orientation_helper.dart';
+import '../../models/panel_model.dart';
+import '../../models/control_types.dart';
+import '../../control_renderers/bare_fader_renderer.dart';
+import '../../control_renderers/control_renderer_factory.dart';
 
 class ScalablePanelViewer extends StatefulWidget {
   final PanelModel panel;
@@ -41,7 +40,7 @@ class _ScalablePanelViewerState extends State<ScalablePanelViewer> {
   
   // Reset transformation to fit the screen
   void _resetTransformation(BoxConstraints constraints) {
-    final matrix = OrientationHelper.getOptimalTransformationMatrix(
+    final matrix = _getOptimalTransformationMatrix(
       widget.panel.size,
       Size(constraints.maxWidth, constraints.maxHeight),
       padding: _panelPadding,
@@ -52,6 +51,64 @@ class _ScalablePanelViewerState extends State<ScalablePanelViewer> {
     });
   }
   
+  // Helper method to calculate optimal transformation matrix
+  Matrix4 _getOptimalTransformationMatrix(
+    Size contentSize,
+    Size screenSize, {
+    double padding = 0,
+    double offsetX = 0,
+    double offsetY = 0,
+  }) {
+    final scaleFactor = _calculateScaleFactor(
+      contentSize, 
+      screenSize, 
+      padding: padding,
+    );
+    
+    // Calculate centering offset
+    final centeredX = (screenSize.width - (contentSize.width * scaleFactor)) / 2;
+    final centeredY = (screenSize.height - (contentSize.height * scaleFactor)) / 2;
+    
+    // Create transformation matrix with scaling and translation
+    final matrix = Matrix4.identity();
+    
+    // Apply scaling
+    matrix.scale(scaleFactor, scaleFactor);
+    
+    // Apply translation for centering
+    matrix.translate(
+      offsetX + (centeredX / scaleFactor), 
+      offsetY + (centeredY / scaleFactor),
+    );
+    
+    return matrix;
+  }
+  
+  // Helper method to calculate optimal scale factor
+  double _calculateScaleFactor(
+    Size contentSize, 
+    Size screenSize, {
+    double padding = 0,
+    double minScale = 0.1,
+    double maxScale = 5.0,
+  }) {
+    // Adjust screen size for padding
+    final availableWidth = screenSize.width - (padding * 2);
+    final availableHeight = screenSize.height - (padding * 2);
+    
+    // Calculate scaling factors for width and height
+    final scaleWidth = availableWidth / contentSize.width;
+    final scaleHeight = availableHeight / contentSize.height;
+    
+    // Use the smaller scale factor to ensure content fits entirely
+    double scaleFactor = scaleWidth < scaleHeight ? scaleWidth : scaleHeight;
+    
+    // Apply scaling limits
+    scaleFactor = scaleFactor.clamp(minScale, maxScale);
+    
+    return scaleFactor;
+  }
+
   @override
   Widget build(BuildContext context) {
     // Get current screen orientation and size
@@ -117,7 +174,7 @@ class _ScalablePanelViewerState extends State<ScalablePanelViewer> {
               }
               
               // Calculate scale factor for info display
-              final scalePercent = OrientationHelper.calculateScaleFactor(
+              final scalePercent = _calculateScaleFactor(
                 widget.panel.size, 
                 Size(constraints.maxWidth, constraints.maxHeight),
                 padding: _panelPadding,

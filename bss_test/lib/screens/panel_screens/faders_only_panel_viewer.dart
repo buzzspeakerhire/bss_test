@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
-import 'models/panel_model.dart';
-import 'models/control_types.dart';
-import 'control_renderers/bare_fader_renderer.dart';
+import '../../models/panel_model.dart';
+import '../../models/control_types.dart';
+import '../../control_renderers/bare_fader_renderer.dart';
 
 class FadersOnlyPanelViewer extends StatelessWidget {
   final PanelModel panel;

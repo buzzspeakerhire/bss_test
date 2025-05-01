@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
-import 'models/panel_model.dart';
-import 'control_renderers/control_renderer_factory.dart';
+import '../../models/panel_model.dart';
+import '../../control_renderers/control_renderer_factory.dart';
 
 class PanelViewer extends StatefulWidget {
   final PanelModel panel;

@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import '../models/control_model.dart';
-import '../fader_communication.dart';
+import '../services/fader_communication.dart';
 
 class InteractiveFaderRenderer extends StatefulWidget {
   final ControlModel control;

@@ -4,7 +4,7 @@ import 'package:xml/xml.dart';
 import 'package:file_picker/file_picker.dart';
 import 'models/panel_model.dart';
 import 'models/control_model.dart';
-import 'models/control_types.dart';  // Added this import
+import 'models/control_types.dart';
 
 class PanelParser {
   /// Loads a panel file from device storage and returns the parsed PanelModel
@@ -16,7 +16,6 @@ class PanelParser {
         allowMultiple: false,
         withData: false,
         withReadStream: false,
-        // Removed allowCompression since it's deprecated
       );
 
       if (result == null || result.files.isEmpty || result.files.first.path == null) {
@@ -97,4 +96,4 @@ class PanelParser {
       }
     }
   }
-}
+} 
