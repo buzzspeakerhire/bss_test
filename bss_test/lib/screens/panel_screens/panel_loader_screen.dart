@@ -6,6 +6,7 @@ import 'panel_viewer.dart';
 import 'faders_only_panel_viewer.dart';
 import 'scalable_panel_viewer.dart';
 import 'fixed_faders_viewer.dart';
+import 'faders_and_source_panel_viewer.dart';  // Add the new import
 
 class PanelLoaderScreen extends StatefulWidget {
   const PanelLoaderScreen({super.key});
@@ -87,6 +88,17 @@ class _PanelLoaderScreenState extends State<PanelLoaderScreen> {
     );
   }
 
+  // Add new function to view faders and source selectors
+  void _viewFadersAndSources() {
+    if (_loadedPanel == null) return;
+    
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) => FadersAndSourcePanelViewer(panel: _loadedPanel!),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -103,14 +115,29 @@ class _PanelLoaderScreenState extends State<PanelLoaderScreen> {
             ),
             if (_loadedPanel != null) ...[
               const SizedBox(height: 16),
-              // Highlight the recommended option
-              ElevatedButton(
-                onPressed: _viewFixedFaders,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Theme.of(context).colorScheme.primaryContainer,
-                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                ),
-                child: const Text('View Optimized Faders'),
+              // Highlight the recommended options
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  ElevatedButton(
+                    onPressed: _viewFixedFaders,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                    ),
+                    child: const Text('Optimized Faders'),
+                  ),
+                  const SizedBox(width: 10),
+                  // Add the new button with highlight
+                  ElevatedButton(
+                    onPressed: _viewFadersAndSources,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Theme.of(context).colorScheme.secondaryContainer,
+                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                    ),
+                    child: const Text('Faders & Sources'),
+                  ),
+                ],
               ),
               
               const SizedBox(height: 16),
