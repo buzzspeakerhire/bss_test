@@ -35,7 +35,10 @@ class ConnectionService {
   
   // Connect to the BSS device
   Future<bool> connect({String? ip, int? portNum}) async {
-    if (isConnected || isConnecting) return false;
+    if (isConnected || isConnecting) {
+      Logger().log('Already connected or connecting');
+      return false;
+    }
     
     ipAddress = ip ?? ipAddress;
     port = portNum ?? port;
@@ -44,8 +47,14 @@ class ConnectionService {
     _notifyConnectionStatus();
     
     try {
+      Logger().log('Attempting to connect to $ipAddress:$port...');
+      
       // Set a connection timeout
-      socket = await Socket.connect(ipAddress, port, timeout: const Duration(seconds: 5));
+      socket = await Socket.connect(ipAddress, port, timeout: const Duration(seconds: 5))
+          .catchError((error) {
+        Logger().log('Connection error details: $error');
+        throw error; // Rethrow to be caught by outer try-catch
+      });
       
       isConnected = true;
       isConnecting = false;
@@ -61,6 +70,7 @@ class ConnectionService {
       socketSubscription = socket!.listen(
         (Uint8List data) {
           try {
+            Logger().log('Received ${data.length} bytes from socket');
             // Add data to buffer
             _buffer.addAll(data);
             
@@ -123,6 +133,10 @@ class ConnectionService {
     }
     
     try {
+      // Log outgoing data
+      final hexData = data.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
+      Logger().log('Sending data: $hexData');
+      
       socket!.add(Uint8List.fromList(data));
       return true;
     } catch (e) {
@@ -139,12 +153,14 @@ class ConnectionService {
         // Look for start byte
         int startIndex = _buffer.indexOf(0x02);
         if (startIndex == -1) {
+          Logger().log('No start byte found in buffer, clearing buffer');
           _buffer.clear();
           return;
         }
         
         // Remove data before start byte
         if (startIndex > 0) {
+          Logger().log('Removing ${startIndex} bytes before start byte');
           _buffer.removeRange(0, startIndex);
         }
         
@@ -157,12 +173,17 @@ class ConnectionService {
             _buffer.removeRange(0, _buffer.length - 2048);
             Logger().log('Buffer size limited to prevent overflow');
           }
+          Logger().log('No end byte found or incomplete message, keeping buffer (${_buffer.length} bytes)');
           return;
         }
         
         // Extract the message (including start and end bytes)
         List<int> message = _buffer.sublist(0, endIndex + 1);
         _buffer.removeRange(0, endIndex + 1);
+        
+        // Log extracted message
+        final hexMessage = message.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
+        Logger().log('Extracted complete message: $hexMessage (${message.length} bytes)');
         
         // Forward the message to the message processor - use non-blocking call
         _safeAddToStream(_messageProcessorController, message);

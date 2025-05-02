@@ -59,12 +59,16 @@ class ControlCommunicationService {
       // Initialize the message processor
       await _messageProcessorService.initialize();
       
+      Logger().log('Control communication service initializing...');
+      
       // Create fader communication instance
       final faderComm = FaderCommunication();
       
       // Listen for connection status changes
       _connectionService.onConnectionStatusChanged.listen((isConnected) {
         try {
+          Logger().log('Connection status changed: $isConnected');
+          
           // Update the connection state in the FaderCommunication service
           faderComm.setConnectionState(isConnected);
           
@@ -88,12 +92,14 @@ class ControlCommunicationService {
       
       // Listen for processed messages from the MessageProcessorService
       _messageProcessorService.onProcessedMessage.listen((message) {
+        Logger().log('Received processed message: ${message.toString()}');
         _handleProcessedMessage(message);
       });
       
       // Listen for extracted messages from the connection service
       _connectionService.onMessageExtracted.listen((message) {
         // Forward to message processor
+        Logger().log('Extracted message from socket, forwarding to processor');
         _messageProcessorService.processMessage(message);
       });
       
@@ -102,6 +108,7 @@ class ControlCommunicationService {
         try {
           // When a fader is moved in the UI, send the update to the device
           if (isConnected) {
+            Logger().log('UI Fader moved: ${data['address']} ${data['paramId']} ${data['value']}');
             setFaderValue(
               data['address'] as String,
               data['paramId'] as String,
@@ -119,6 +126,7 @@ class ControlCommunicationService {
           faderComm.onButtonStateChanged.listen((data) {
             // When a button state changes in the UI, send the update to the device
             if (isConnected) {
+              Logger().log('UI Button state changed: ${data['address']} ${data['paramId']} ${data['state']}');
               setButtonState(
                 data['address'] as String,
                 data['paramId'] as String,
@@ -134,6 +142,7 @@ class ControlCommunicationService {
       // Forward fader updates to the FaderCommunication service
       onFaderUpdate.listen((data) {
         try {
+          Logger().log('Device fader update received, forwarding to UI: ${data.toString()}');
           faderComm.updateFaderFromDevice(
             data['address'] as String,
             data['paramId'] as String,
@@ -147,6 +156,7 @@ class ControlCommunicationService {
       // Forward button updates to the FaderCommunication service
       onButtonUpdate.listen((data) {
         try {
+          Logger().log('Device button update received, forwarding to UI: ${data.toString()}');
           faderComm.updateButtonFromDevice(
             data['address'] as String,
             data['paramId'] as String,
@@ -169,6 +179,7 @@ class ControlCommunicationService {
   // Connect to the device
   Future<bool> connect({String? ip, int? port}) async {
     try {
+      Logger().log('Connecting to ${ip ?? "default"} port ${port ?? "default"}...');
       return await _connectionService.connect(ip: ip, portNum: port);
     } catch (e) {
       Logger().log('Error connecting: $e');
@@ -179,6 +190,7 @@ class ControlCommunicationService {
   // Disconnect from the device
   void disconnect() {
     try {
+      Logger().log('Disconnecting from device...');
       _connectionService.disconnect();
     } catch (e) {
       Logger().log('Error disconnecting: $e');
@@ -192,11 +204,15 @@ class ControlCommunicationService {
       final paramId = int.parse(paramIdHex.replaceAll("0x", ""), radix: 16);
       final deviceValue = _bssProtocolService.normalizedToFaderValue(normalizedValue);
       
+      Logger().log('Setting fader value: $addressHex, $paramIdHex, ${normalizedValue.toStringAsFixed(3)} (device value: $deviceValue)');
+      
       final command = _bssProtocolService.generateSetCommand(address, paramId, deviceValue);
       final success = await _connectionService.sendData(command);
       
       if (success) {
-        Logger().log('Set fader value: $addressHex, $paramIdHex, ${normalizedValue.toStringAsFixed(3)}');
+        Logger().log('Set fader command sent successfully');
+      } else {
+        Logger().log('Failed to send fader command');
       }
       
       return success;
@@ -213,11 +229,15 @@ class ControlCommunicationService {
       final paramId = int.parse(paramIdHex.replaceAll("0x", ""), radix: 16);
       final value = state ? 1 : 0;
       
+      Logger().log('Setting button state: $addressHex, $paramIdHex, $state (value: $value)');
+      
       final command = _bssProtocolService.generateSetCommand(address, paramId, value);
       final success = await _connectionService.sendData(command);
       
       if (success) {
-        Logger().log('Set button state: $addressHex, $paramIdHex, $state');
+        Logger().log('Set button command sent successfully');
+      } else {
+        Logger().log('Failed to send button command');
       }
       
       return success;
@@ -300,13 +320,15 @@ class ControlCommunicationService {
     try {
       Logger().log('Subscribing to parameters...');
       
-      // Use simpler, hardcoded addresses for stability
+      // Use a delay between subscription requests to avoid overwhelming the device
       // 1. Subscribe to fader parameter
       final faderAddress = _bssProtocolService.parseHiQnetAddress("0x2D6803000100");
       final faderParamId = 0; // 0x0
       final faderSubscribeCmd = _bssProtocolService.generateSubscribeCommand(faderAddress, faderParamId);
       await _connectionService.sendData(faderSubscribeCmd);
       Logger().log('Subscribed to fader: 0x2D6803000100, 0x0');
+      
+      await Future.delayed(const Duration(milliseconds: 100));
       
       // 2. Subscribe to button parameter
       final buttonAddress = _bssProtocolService.parseHiQnetAddress("0x2D6803000100");
@@ -315,6 +337,8 @@ class ControlCommunicationService {
       await _connectionService.sendData(buttonSubscribeCmd);
       Logger().log('Subscribed to button: 0x2D6803000100, 0x1');
       
+      await Future.delayed(const Duration(milliseconds: 100));
+      
       // 3. Subscribe to meter parameter (with refresh rate)
       final meterAddress = _bssProtocolService.parseHiQnetAddress("0x2D6803000200");
       final meterParamId = 0; // 0x0
@@ -322,12 +346,16 @@ class ControlCommunicationService {
       await _connectionService.sendData(meterSubscribeCmd);
       Logger().log('Subscribed to meter: 0x2D6803000200, 0x0, rate=100ms');
       
+      await Future.delayed(const Duration(milliseconds: 100));
+      
       // 4. Subscribe to source selector parameter
       final sourceAddress = _bssProtocolService.parseHiQnetAddress("0x2D6803000300");
       final sourceParamId = 0; // 0x0
       final sourceSubscribeCmd = _bssProtocolService.generateSubscribeCommand(sourceAddress, sourceParamId);
       await _connectionService.sendData(sourceSubscribeCmd);
       Logger().log('Subscribed to source selector: 0x2D6803000300, 0x0');
+      
+      Logger().log('All parameter subscriptions complete');
       
     } catch (e) {
       Logger().log('Error subscribing to parameters: $e');
@@ -409,6 +437,8 @@ class ControlCommunicationService {
         String addressHex = '0x${address.map((b) => b.toRadixString(16).padLeft(2, '0')).join('')}';
         String paramIdHex = '0x${paramId.toRadixString(16)}';
         
+        Logger().log('Processing message - Address: $addressHex, ParamId: $paramIdHex, Value: $value');
+        
         // Simplify control type detection to improve stability
         // Use paramId to determine control type
         if (paramId == 0) {
@@ -449,6 +479,7 @@ class ControlCommunicationService {
           } else {
             // This is likely a fader
             final normalizedValue = _bssProtocolService.faderValueToNormalized(value);
+            Logger().log('Processing fader update with raw value: $value, normalized: ${normalizedValue.toStringAsFixed(3)}');
             _safeAddToStream(_faderUpdateController, {
               'address': addressHex,
               'paramId': paramIdHex,
@@ -460,6 +491,7 @@ class ControlCommunicationService {
         } 
         else if (paramId == 1) {
           // This is likely a button
+          Logger().log('Processing button update with value: $value');
           _safeAddToStream(_buttonUpdateController, {
             'address': addressHex,
             'paramId': paramIdHex,
@@ -473,7 +505,7 @@ class ControlCommunicationService {
           Logger().log('Received message for unknown parameter ID: $paramId, address: $addressHex, value: $value');
         }
       } else if (message['type'] == 'ACK') {
-        // Optional: Handle acknowledgement if needed
+        Logger().log('Received ACK');
       } else if (message['type'] == 'NAK') {
         Logger().log('Received NAK - command rejected');
       } else if (message['error'] != null) {

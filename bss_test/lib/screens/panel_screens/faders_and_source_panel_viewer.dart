@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
-import '../models/panel_model.dart';
-import '../models/control_model.dart';
-import '../models/control_types.dart';
-import '../control_renderers/bare_fader_renderer.dart';
-import '../control_renderers/selector_renderer.dart';
-import '../helpers/orientation_helper.dart';
+import '../../models/panel_model.dart';
+import '../../models/control_model.dart';
+import '../../models/control_types.dart';
+import '../../control_renderers/bare_fader_renderer.dart';
+import '../../control_renderers/selector_renderer.dart';
+import '../../helpers/orientation_helper.dart';
 
 class FadersAndSourcePanelViewer extends StatefulWidget {
   final PanelModel panel;
