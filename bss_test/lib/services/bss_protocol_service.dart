@@ -1,5 +1,6 @@
 import '../utils/hex_utils.dart';
 import '../utils/logger.dart';
+import 'dart:math';
 
 /// Service that handles the BSS London Direct Inject protocol
 class BssProtocolService {
@@ -24,6 +25,12 @@ class BssProtocolService {
   static const int ACK_BYTE = 0x06;
   static const int NAK_BYTE = 0x15;
   static const int ESCAPE_BYTE = 0x1B;
+
+  // BSS Fader value constants (based on docs)
+  static const int BSS_MIN_VALUE = -280617;  // -80dB
+  static const int BSS_MAX_VALUE = 100000;   // +10dB
+  static const int BSS_UNITY_VALUE = 0;      // 0dB
+  static const double BSS_UNITY_NORMALIZED = 0.7373; // Point where 0dB occurs on fader
   
   // Parse HiQnet address string to list of bytes
   List<int> parseHiQnetAddress(String addressHex) {
@@ -155,54 +162,143 @@ class BssProtocolService {
   
   // Convert normalized value (0.0 to 1.0) to device value for faders
   int normalizedToFaderValue(double normalizedValue) {
-    // Debug - track values for troubleshooting
-    Logger().log('Normalized fader value to convert: $normalizedValue');
+    Logger().log('Converting normalized fader value: $normalizedValue');
     
-    // Max value = 0x0186A0 (100000), Min value = 0xFFFBB7D7 (-280617)
-    final double maxValue = 0x0186A0.toDouble(); // 100000
-    final double minValue = -280617.0; // 0xFFFBB7D7 as signed integer
+    int deviceValue;
     
-    // Calculate raw value
-    int rawValue = (minValue + normalizedValue * (maxValue - minValue)).round();
-    
-    // Log the calculated value for debugging
-    Logger().log('Calculated fader device value: $rawValue');
-    
-    // Handle signed/unsigned conversion for protocol
-    if (rawValue < 0) {
-      // If value is negative, convert to 32-bit twos complement
-      rawValue = 0xFFFFFFFF + rawValue + 1;
+    // Handle edge cases
+    if (normalizedValue <= 0.0) {
+      deviceValue = BSS_MIN_VALUE;  // Minimum (-80dB)
+      Logger().log('Minimum value detected, using -80dB: $deviceValue');
+    } 
+    else if (normalizedValue >= 1.0) {
+      deviceValue = BSS_MAX_VALUE;  // Maximum (+10dB)
+      Logger().log('Maximum value detected, using +10dB: $deviceValue');
+    }
+    // Unity gain (0dB) point
+    else if ((normalizedValue - BSS_UNITY_NORMALIZED).abs() < 0.001) {
+      deviceValue = BSS_UNITY_VALUE;  // Unity (0dB)
+      Logger().log('Unity gain point detected, using 0dB: $deviceValue');
+    }
+    // Below unity gain
+    else if (normalizedValue < BSS_UNITY_NORMALIZED) {
+      // BSS faders use a logarithmic curve below unity gain
+      // Linear interpolation of normalized values fails badly
+      // Instead convert to dB first, then to device value
       
-      // Log adjusted negative value
-      Logger().log('Adjusted negative value as 32-bit unsigned: $rawValue (0x${rawValue.toRadixString(16).toUpperCase()})');
+      // Calculate dB value (log scale): 
+      // Map 0.0 -> -80dB, BSS_UNITY_NORMALIZED -> 0dB
+      double normalizedBelow = normalizedValue / BSS_UNITY_NORMALIZED;
+      
+      // Use a special corrected formula based on analysis of BSS protocol values
+      // This maps -80dB to MIN_VALUE and 0dB to UNITY_VALUE
+      double dbValue = -80.0 * (1.0 - normalizedBelow);
+      
+      // Convert dB to device value directly using BSS fixed-point integer representation
+      if (dbValue <= -60.0) {
+        // Special scaling for very low values to avoid going to -infinity
+        double attenFactor = (dbValue + 80.0) / 20.0;  // 0.0 to 1.0 range
+        deviceValue = (BSS_MIN_VALUE * (1.0 - attenFactor)).round();
+      } else {
+        // More precise scaling for higher values
+        // BSS uses a power of 10 calculation for dB
+        double gain = pow(10, dbValue / 20.0).toDouble();
+        
+        // Scale gain to device units
+        deviceValue = ((gain - 1.0) * 100000).round();
+        
+        // For negative dB, device value is negative
+        if (dbValue < 0) {
+          // Apply additional scaling factor for better matching
+          deviceValue = (deviceValue * 1.015).round();
+        }
+      }
+      
+      Logger().log('Below unity calculation: $normalizedValue -> $normalizedBelow -> ${dbValue}dB -> $deviceValue');
+    }
+    // Above unity gain
+    else {
+      // Linear scaling from UNITY to MAX
+      double normalizedAbove = (normalizedValue - BSS_UNITY_NORMALIZED) / (1.0 - BSS_UNITY_NORMALIZED);
+      deviceValue = (BSS_UNITY_VALUE + (BSS_MAX_VALUE - BSS_UNITY_VALUE) * normalizedAbove).round();
+      
+      Logger().log('Above unity calculation: $normalizedValue -> $normalizedAbove -> $deviceValue');
     }
     
-    return rawValue;
+    // Ensure value is in valid range
+    deviceValue = deviceValue.clamp(BSS_MIN_VALUE, BSS_MAX_VALUE);
+    
+    Logger().log('Final calculated device value: $deviceValue');
+    return deviceValue;
   }
   
   // Convert device value to normalized value (0.0 to 1.0) for faders
   double faderValueToNormalized(int deviceValue) {
-    // Debug output for incoming value
-    Logger().log('Device fader value to convert: $deviceValue (0x${deviceValue.toRadixString(16).toUpperCase()})');
-    
-    final double maxValue = 0x0186A0.toDouble(); // 100000
-    final double minValue = -280617.0; // 0xFFFBB7D7 as signed integer
-    
-    // Handle signed values
+    // Handle unsigned/signed conversion
     double signedValue = deviceValue.toDouble();
+    bool isUnsigned = false;
+    
     if ((deviceValue & 0x80000000) != 0) {
-      // Convert from unsigned 32-bit to signed
       signedValue = deviceValue - 0x100000000;
+      isUnsigned = true;
+      Logger().log('Device fader value to convert: $deviceValue (0x${deviceValue.toRadixString(16).toUpperCase()})');
       Logger().log('Converted unsigned value to signed: $signedValue');
+    } else {
+      Logger().log('Device fader value to convert: $deviceValue (0x${deviceValue.toRadixString(16).toUpperCase()})');
     }
     
-    // Calculate normalized value
-    double normalizedValue = (signedValue - minValue) / (maxValue - minValue);
+    double normalizedValue;
+    
+    // Handle edge cases
+    if (signedValue <= BSS_MIN_VALUE) {
+      normalizedValue = 0.0;
+      Logger().log('Minimum value detected, using normalized 0.0');
+    }
+    else if (signedValue >= BSS_MAX_VALUE) {
+      normalizedValue = 1.0;
+      Logger().log('Maximum value detected, using normalized 1.0');
+    }
+    // Unity gain (0dB) exact point
+    else if (signedValue == BSS_UNITY_VALUE) {
+      normalizedValue = BSS_UNITY_NORMALIZED;
+      Logger().log('Unity gain value detected, using exact normalized value: $normalizedValue');
+    }
+    // Below unity gain (negative values in BSS)
+    else if (signedValue < BSS_UNITY_VALUE) {
+      // Convert to dB scale first
+      // For values close to minimum, special handling to avoid extreme values
+      if (signedValue <= -250000) {
+        // Near minimum, use linear scaling for the tail end
+        double fraction = (signedValue - BSS_MIN_VALUE) / (-250000 - BSS_MIN_VALUE);
+        normalizedValue = fraction * 0.1; // Scale to 0.0-0.1 range
+      } else {
+        // Convert to dB and use logarithmic mapping
+        // This is the approximate inverse of the sending formula
+        
+        // Calculate dB attenuation from device value
+        // Map device value to dB, then to normalized value
+        double fraction = (signedValue - BSS_MIN_VALUE) / (BSS_UNITY_VALUE - BSS_MIN_VALUE);
+        double dbValue = -80.0 * (1.0 - fraction);
+        
+        // Map dB value to normalized range
+        normalizedValue = (dbValue + 80.0) / 80.0 * BSS_UNITY_NORMALIZED;
+      }
+      
+      Logger().log('Below unity calculation: $signedValue -> $normalizedValue');
+    }
+    // Above unity gain (positive values in BSS)
+    else {
+      // Linear scaling for above unity
+      double fraction = (signedValue - BSS_UNITY_VALUE) / (BSS_MAX_VALUE - BSS_UNITY_VALUE);
+      normalizedValue = BSS_UNITY_NORMALIZED + (1.0 - BSS_UNITY_NORMALIZED) * fraction;
+      
+      Logger().log('Above unity calculation: $signedValue -> $fraction -> $normalizedValue');
+    }
+    
+    // Ensure value is within valid range
     normalizedValue = normalizedValue.clamp(0.0, 1.0);
     
-    // Log result for debugging
-    Logger().log('Converted to normalized value: ${normalizedValue.toStringAsFixed(4)}');
-    
+    Logger().log('Final normalized value: ${normalizedValue.toStringAsFixed(4)}');
     return normalizedValue;
   }
 }
