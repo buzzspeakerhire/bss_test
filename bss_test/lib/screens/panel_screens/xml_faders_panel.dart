@@ -46,6 +46,10 @@ class _XmlFadersPanelState extends State<XmlFadersPanel> with SingleTickerProvid
   // Track subscriptions
   StreamSubscription? _connectionSubscription;
   
+  // Enhanced multi-address tracking
+  Map<String, List<Map<String, String>>> _faderAddressMappings = {};
+  Map<String, List<Map<String, String>>> _sourceAddressMappings = {};
+  
   @override
   void initState() {
     super.initState();
@@ -68,29 +72,67 @@ class _XmlFadersPanelState extends State<XmlFadersPanel> with SingleTickerProvid
     _faders = widget.panel.findControlsByType(ControlType.fader);
     _sourceSelectors = widget.panel.findControlsByType(ControlType.selector);
     
+    // Build mapping of address pairs for debugging and management
+    _buildAddressMappings();
+    
     // Print debug info for controls
     debugPrint('Found ${_faders.length} faders and ${_sourceSelectors.length} source selectors');
+    _logMultiAddressControls();
+  }
+  
+  // Enhanced: Build a mapping of all address pairs by control name for better tracking
+  void _buildAddressMappings() {
+    _faderAddressMappings.clear();
+    _sourceAddressMappings.clear();
     
-    // Print out details for controls with multiple addresses
+    // Process faders
     for (var fader in _faders) {
       final addressPairs = fader.getAddressParameterPairs();
+      if (addressPairs.isNotEmpty) {
+        _faderAddressMappings[fader.name] = List.from(addressPairs);
+      }
+    }
+    
+    // Process source selectors
+    for (var selector in _sourceSelectors) {
+      final addressPairs = selector.getAddressParameterPairs();
+      if (addressPairs.isNotEmpty) {
+        _sourceAddressMappings[selector.name] = List.from(addressPairs);
+      }
+    }
+  }
+  
+  // Enhanced logging for multi-address controls
+  void _logMultiAddressControls() {
+    // Log faders with multiple addresses
+    int multiAddressFaderCount = 0;
+    
+    for (var name in _faderAddressMappings.keys) {
+      final addressPairs = _faderAddressMappings[name]!;
       if (addressPairs.length > 1) {
-        debugPrint('Multi-address Fader: ${fader.name} has ${addressPairs.length} address/parameter pairs:');
+        multiAddressFaderCount++;
+        debugPrint('MULTI-ADDRESS FADER: $name has ${addressPairs.length} address/parameter pairs:');
         for (var pair in addressPairs) {
           debugPrint('  • ${pair['address']}:${pair['paramId']}');
         }
       }
     }
     
-    for (var selector in _sourceSelectors) {
-      final addressPairs = selector.getAddressParameterPairs();
+    // Log source selectors with multiple addresses
+    int multiAddressSourceCount = 0;
+    
+    for (var name in _sourceAddressMappings.keys) {
+      final addressPairs = _sourceAddressMappings[name]!;
       if (addressPairs.length > 1) {
-        debugPrint('Multi-address Selector: ${selector.name} has ${addressPairs.length} address/parameter pairs:');
+        multiAddressSourceCount++;
+        debugPrint('MULTI-ADDRESS SOURCE SELECTOR: $name has ${addressPairs.length} address/parameter pairs:');
         for (var pair in addressPairs) {
           debugPrint('  • ${pair['address']}:${pair['paramId']}');
         }
       }
     }
+    
+    debugPrint('SUMMARY: Found $multiAddressFaderCount multi-address faders and $multiAddressSourceCount multi-address source selectors');
   }
   
   @override
@@ -105,7 +147,9 @@ class _XmlFadersPanelState extends State<XmlFadersPanel> with SingleTickerProvid
     if (address == null) return null;
     
     if (address.startsWith('0x') || address.startsWith('0X')) {
-      final hexPart = address.substring(2).toUpperCase();
+      // ENHANCED: Ensure a cleaner standardized format
+      final strippedAddress = address.substring(2).replaceAll(" ", "");
+      final hexPart = strippedAddress.toUpperCase();
       return '0x$hexPart';
     }
     return address;
@@ -116,7 +160,9 @@ class _XmlFadersPanelState extends State<XmlFadersPanel> with SingleTickerProvid
     if (paramId == null) return null;
     
     if (paramId.startsWith('0x') || paramId.startsWith('0X')) {
-      final hexPart = paramId.substring(2).toUpperCase();
+      // ENHANCED: Ensure a cleaner standardized format
+      final strippedParam = paramId.substring(2).replaceAll(" ", "");
+      final hexPart = strippedParam.toUpperCase();
       return '0x$hexPart';
     }
     return paramId;
@@ -169,6 +215,12 @@ class _XmlFadersPanelState extends State<XmlFadersPanel> with SingleTickerProvid
             onPressed: _refreshAllControls,
             tooltip: 'Refresh all controls',
           ),
+          // ENHANCED: Add a debug button to help diagnose multi-address issues
+          IconButton(
+            icon: const Icon(Icons.bug_report),
+            onPressed: _logMultiAddressControls,
+            tooltip: 'Debug multi-address controls',
+          ),
         ],
         bottom: TabBar(
           controller: _tabController,
@@ -216,11 +268,14 @@ class _XmlFadersPanelState extends State<XmlFadersPanel> with SingleTickerProvid
     );
   }
   
-  // Force refresh all controls
+  // Force refresh all controls - ENHANCED for multi-address support
   void _refreshAllControls() {
     debugPrint('Refreshing all controls');
     
     // We need to re-subscribe to all control addresses
+    int totalSubscriptions = 0;
+    
+    // Refresh faders
     for (var fader in _faders) {
       final addressPairs = fader.getAddressParameterPairs();
       for (var pair in addressPairs) {
@@ -228,11 +283,51 @@ class _XmlFadersPanelState extends State<XmlFadersPanel> with SingleTickerProvid
         final paramId = pair['paramId'];
         if (address != null && paramId != null) {
           _controlService.subscribeFaderValue(address, paramId);
-          debugPrint('Re-subscribed to fader: $address:$paramId');
+          totalSubscriptions++;
+          debugPrint('Re-subscribed to fader ${fader.name}: $address:$paramId');
+          
+          // Also subscribe to N-gain related parameters
+          try {
+            // Standard paramId format without 0x prefix for numeric comparisons
+            final paramHex = paramId.toLowerCase().replaceAll("0x", "");
+            final paramNum = int.tryParse(paramHex, radix: 16);
+            
+            if (paramNum != null) {
+              // If this is a standard gain parameter (0x0)
+              if (paramNum == 0) {
+                // Also subscribe to N-gain master (0x60)
+                _controlService.subscribeFaderValue(address, "0x60");
+                totalSubscriptions++;
+                debugPrint('Re-subscribed to N-gain master for ${fader.name}: $address:0x60');
+              } 
+              // If this is N-gain master (0x60)
+              else if (paramNum == 0x60) {
+                // Also subscribe to standard gain (0x0)
+                _controlService.subscribeFaderValue(address, "0x0");
+                totalSubscriptions++;
+                debugPrint('Re-subscribed to standard gain for ${fader.name}: $address:0x0');
+              }
+              // If this is a channel gain parameter (0x1-0x10)
+              else if (paramNum > 0 && paramNum <= 0x10) {
+                // Also subscribe to adjacent channels
+                _controlService.subscribeFaderValue(address, "0x0"); // Channel 1
+                totalSubscriptions++;
+                debugPrint('Re-subscribed to Channel 1 for ${fader.name}: $address:0x0');
+                
+                // N-gain master
+                _controlService.subscribeFaderValue(address, "0x60");
+                totalSubscriptions++;
+                debugPrint('Re-subscribed to N-gain master for ${fader.name}: $address:0x60');
+              }
+            }
+          } catch (e) {
+            debugPrint('Error in extended subscriptions: $e');
+          }
         }
       }
     }
     
+    // Refresh source selectors
     for (var selector in _sourceSelectors) {
       final addressPairs = selector.getAddressParameterPairs();
       for (var pair in addressPairs) {
@@ -240,10 +335,13 @@ class _XmlFadersPanelState extends State<XmlFadersPanel> with SingleTickerProvid
         final paramId = pair['paramId'];
         if (address != null && paramId != null) {
           _controlService.subscribeSourceValue(address, paramId);
-          debugPrint('Re-subscribed to selector: $address:$paramId');
+          totalSubscriptions++;
+          debugPrint('Re-subscribed to selector ${selector.name}: $address:$paramId');
         }
       }
     }
+    
+    debugPrint('Refresh completed - sent $totalSubscriptions subscription requests');
     
     // Trigger a rebuild
     setState(() {});
@@ -315,7 +413,6 @@ class XmlFaderControl extends StatefulWidget {
 class _XmlFaderControlState extends State<XmlFaderControl> {
   final _faderComm = FaderCommunication();
   final _controlService = ControlCommunicationService();
-  final _connectionService = ConnectionService(); // Direct connection service
   
   double _faderValue = 0.5;
   bool _isDragging = false;
@@ -326,6 +423,10 @@ class _XmlFaderControlState extends State<XmlFaderControl> {
   
   // Track subscriptions
   List<StreamSubscription> _subscriptions = [];
+  
+  // Enhanced data for multi-address debugging
+  Map<String, double> _lastValueByAddress = {};
+  Map<String, DateTime> _lastUpdateByAddress = {};
   
   // UI update info
   bool _isUpdatingFromDevice = false;
@@ -338,12 +439,12 @@ class _XmlFaderControlState extends State<XmlFaderControl> {
     // Get all addresses and parameter IDs
     _initializeAddresses();
     
-    // Debug logging
-    debugPrint('XmlFaderControl: Initializing ${widget.control.name}');
-    debugPrint('  Found ${_addressParamPairs.length} address/parameter pairs');
-    
-    for (var pair in _addressParamPairs) {
-      debugPrint('  Address: ${pair['address']}, ParamId: ${pair['paramId']}');
+    // Debug logging for multi-address faders
+    if (_addressParamPairs.length > 1) {
+      debugPrint('MULTI-ADDRESS FADER: ${widget.control.name} has ${_addressParamPairs.length} address/parameter pairs:');
+      for (var pair in _addressParamPairs) {
+        debugPrint('  • ${pair['address']}:${pair['paramId']}');
+      }
     }
     
     // Subscribe to fader updates for all addresses
@@ -390,165 +491,256 @@ class _XmlFaderControlState extends State<XmlFaderControl> {
     }
     _subscriptions.clear();
     
-    // Listen for fader updates from FaderComm
+    // IMPROVED: Listen for fader updates with enhanced matching logic
     var faderSub = _faderComm.onFaderUpdate.listen((data) {
-      final dataAddress = widget.normalizeAddressCase(data['address'].toString());
-      final dataParamId = widget.normalizeParamIdCase(data['paramId'].toString());
+      final receivedAddress = widget.normalizeAddressCase(data['address'].toString());
+      final receivedParamId = widget.normalizeParamIdCase(data['paramId'].toString());
+      final value = data['value'] as double;
       
-      // Log what we received for debugging
-      debugPrint('XmlFaderControl ${widget.control.name}: Received update, checking if matches:');
-      debugPrint('  Received: $dataAddress:$dataParamId, value: ${data['value']}');
+      // Log received update for debugging
+      debugPrint('XmlFaderControl ${widget.control.name}: Received update from FaderComm:');
+      debugPrint('  Received: $receivedAddress:$receivedParamId, value: $value');
       
-      // Check if this update is for any of our address/paramId pairs with more flexible matching
-      bool matched = false;
-      for (var pair in _addressParamPairs) {
-        final pairAddress = pair['address']?.toLowerCase();
-        final pairParamId = pair['paramId']?.toLowerCase();
-        final dataAddressLower = dataAddress?.toLowerCase();
-        final dataParamIdLower = dataParamId?.toLowerCase();
-        
-        // Try various matching strategies
-        bool addressMatches = pairAddress == dataAddressLower;
-        
-        // For paramId, try both hex and decimal representations
-        bool paramIdMatches = pairParamId == dataParamIdLower;
-        
-        // Try to convert between formats (decimal/hex) if direct match fails
-        if (!paramIdMatches && pairParamId != null && dataParamId != null) {
-          try {
-            // Try parsing as hex and comparing decimal values
-            final pairDecimal = int.parse(pairParamId.replaceAll('0x', ''), radix: 16);
-            final dataDecimal = int.parse(dataParamId.replaceAll('0x', ''), radix: 16);
-            paramIdMatches = pairDecimal == dataDecimal;
-            
-            if (!paramIdMatches) {
-              // Another format: compare the last two characters of hex representation
-              final pairShort = pairParamId.replaceAll('0x', '').padLeft(2, '0').substring(0, 2).toLowerCase();
-              final dataShort = dataParamId.replaceAll('0x', '').padLeft(2, '0').substring(0, 2).toLowerCase();
-              paramIdMatches = pairShort == dataShort;
-            }
-          } catch (e) {
-            debugPrint('Error comparing paramIds: $e');
-          }
-        }
-        
-        if (addressMatches && paramIdMatches && !_isDragging) {
-          debugPrint('  ✓ MATCHED with ${pair['address']}:${pair['paramId']}');
-          matched = true;
-          
-          final now = DateTime.now();
-          
-          // Update UI with visual feedback
-          setState(() {
-            _faderValue = data['value'];
-            _isUpdatingFromDevice = true;
-            _lastUpdateSource = "FaderComm";
-            _lastUpdateTime = now;
-          });
-          
-          // Clear update indicator after a short delay
-          Future.delayed(const Duration(milliseconds: 500), () {
-            if (mounted) {
-              setState(() {
-                _isUpdatingFromDevice = false;
-              });
-            }
-          });
-          
-          break;
-        } else {
-          debugPrint('  ✗ NO MATCH with ${pair['address']}:${pair['paramId']}');
-          debugPrint('    Address match: $addressMatches, ParamId match: $paramIdMatches');
-        }
-      }
+      // Store value by address for tracking
+      final addressKey = '$receivedAddress:$receivedParamId';
+      _lastValueByAddress[addressKey] = value;
+      _lastUpdateByAddress[addressKey] = DateTime.now();
       
-      if (!matched) {
-        debugPrint('  ✗ NO MATCH FOUND for any address/paramId pair');
-      }
+      // Check if this update is for any of our address/paramId pairs with enhanced matching
+      _tryMatchAndUpdateFader(receivedAddress, receivedParamId, value, "FaderComm");
     });
     _subscriptions.add(faderSub);
     
-    // Also listen directly to the control service updates with similar flexible matching
+    // IMPROVED: Also listen directly to the control service updates
     var controlSub = _controlService.onFaderUpdate.listen((data) {
-      final dataAddress = widget.normalizeAddressCase(data['address'].toString());
-      final dataParamId = widget.normalizeParamIdCase(data['paramId'].toString());
+      final receivedAddress = widget.normalizeAddressCase(data['address'].toString());
+      final receivedParamId = widget.normalizeParamIdCase(data['paramId'].toString());
+      final value = data['value'] as double;
       
-      // Log what we received for debugging
-      debugPrint('XmlFaderControl ${widget.control.name}: Received ControlService update:');
-      debugPrint('  Received: $dataAddress:$dataParamId, value: ${data['value']}');
+      // Log received update for debugging
+      debugPrint('XmlFaderControl ${widget.control.name}: Received update from ControlService:');
+      debugPrint('  Received: $receivedAddress:$receivedParamId, value: $value');
       
-      // Check with flexible matching
-      bool matched = false;
-      for (var pair in _addressParamPairs) {
-        final pairAddress = pair['address']?.toLowerCase();
-        final pairParamId = pair['paramId']?.toLowerCase();
-        final dataAddressLower = dataAddress?.toLowerCase();
-        final dataParamIdLower = dataParamId?.toLowerCase();
-        
-        // Try various matching strategies
-        bool addressMatches = pairAddress == dataAddressLower;
-        
-        // For paramId, try both hex and decimal representations
-        bool paramIdMatches = pairParamId == dataParamIdLower;
-        
-        // Try to convert between formats (decimal/hex) if direct match fails
-        if (!paramIdMatches && pairParamId != null && dataParamId != null) {
-          try {
-            // Try parsing as hex and comparing decimal values
-            final pairDecimal = int.parse(pairParamId.replaceAll('0x', ''), radix: 16);
-            final dataDecimal = int.parse(dataParamId.replaceAll('0x', ''), radix: 16);
-            paramIdMatches = pairDecimal == dataDecimal;
-            
-            if (!paramIdMatches) {
-              // Another format: compare the last two characters of hex representation
-              final pairShort = pairParamId.replaceAll('0x', '').padLeft(2, '0').substring(0, 2).toLowerCase();
-              final dataShort = dataParamId.replaceAll('0x', '').padLeft(2, '0').substring(0, 2).toLowerCase();
-              paramIdMatches = pairShort == dataShort;
-            }
-          } catch (e) {
-            debugPrint('Error comparing paramIds: $e');
-          }
-        }
-        
-        if (addressMatches && paramIdMatches && !_isDragging) {
-          debugPrint('  ✓ MATCHED with ${pair['address']}:${pair['paramId']}');
-          matched = true;
-          
-          final now = DateTime.now();
-          
-          // Update UI with visual feedback
-          setState(() {
-            _faderValue = data['value'];
-            _isUpdatingFromDevice = true;
-            _lastUpdateSource = "ControlService";
-            _lastUpdateTime = now;
-          });
-          
-          // Clear update indicator after a short delay
-          Future.delayed(const Duration(milliseconds: 500), () {
-            if (mounted) {
-              setState(() {
-                _isUpdatingFromDevice = false;
-              });
-            }
-          });
-          
-          break;
-        }
-      }
+      // Store value by address for tracking
+      final addressKey = '$receivedAddress:$receivedParamId';
+      _lastValueByAddress[addressKey] = value;
+      _lastUpdateByAddress[addressKey] = DateTime.now();
       
-      if (!matched) {
-        debugPrint('  ✗ NO MATCH FOUND for any address/paramId pair');
-      }
+      // Check with enhanced matching logic
+      _tryMatchAndUpdateFader(receivedAddress, receivedParamId, value, "ControlService");
     });
     _subscriptions.add(controlSub);
     
-    // Subscribe to ensure we get initial values for all addresses
+    // Enhanced subscription for N-gain modules and channels
     if (widget.isConnected) {
       for (var pair in _addressParamPairs) {
-        _controlService.subscribeFaderValue(pair['address']!, pair['paramId']!);
-        debugPrint('XmlFaderControl: Subscribed to ${pair['address']}:${pair['paramId']}');
+        final address = pair['address']!;
+        final paramId = pair['paramId']!;
+        
+        // Primary subscription
+        _controlService.subscribeFaderValue(address, paramId);
+        debugPrint('XmlFaderControl: Subscribed to $address:$paramId');
+        
+        // Special handling for gain modules
+        try {
+          // Standard paramId format without 0x prefix for numeric comparisons
+          final paramHex = paramId.toLowerCase().replaceAll("0x", "");
+          final paramNum = int.tryParse(paramHex, radix: 16);
+          
+          if (paramNum != null) {
+            // If this is a standard gain parameter (0x0)
+            if (paramNum == 0) {
+              // Also subscribe to N-gain master (0x60)
+              _controlService.subscribeFaderValue(address, "0x60");
+              debugPrint('XmlFaderControl: Also subscribed to N-gain master: $address:0x60');
+            } 
+            // If this is N-gain master (0x60)
+            else if (paramNum == 0x60) {
+              // Subscribe to first few channel gains
+              for (int i = 0; i < 3; i++) {
+                final channelParam = "0x${i.toRadixString(16)}";
+                _controlService.subscribeFaderValue(address, channelParam);
+                debugPrint('XmlFaderControl: Also subscribed to channel $i: $address:$channelParam');
+              }
+            }
+            // If this is a channel gain parameter (0x1-0x10)
+            else if (paramNum > 0 && paramNum <= 0x10) {
+              // Also subscribe to master gain
+              _controlService.subscribeFaderValue(address, "0x60");
+              debugPrint('XmlFaderControl: Also subscribed to N-gain master: $address:0x60');
+              
+              // For channel-specific gains, try subscribing to channel 1 too
+              _controlService.subscribeFaderValue(address, "0x0"); // Channel 1
+              debugPrint('XmlFaderControl: Also subscribed to Channel 1: $address:0x0');
+              
+              // And also to adjacent channels
+              if (paramNum < 0x10) {
+                final nextChannel = "0x${(paramNum + 1).toRadixString(16)}";
+                _controlService.subscribeFaderValue(address, nextChannel);
+                debugPrint('XmlFaderControl: Also subscribed to next channel: $address:$nextChannel');
+              }
+            }
+          }
+        } catch (e) {
+          debugPrint('Error in extended subscriptions: $e');
+        }
       }
+    }
+  }
+  
+  // ENHANCED: New centralized matching logic with more flexible address comparison
+  // and specific handling for N-gain modules
+  void _tryMatchAndUpdateFader(String? receivedAddress, String? receivedParamId, double value, String source) {
+    if (receivedAddress == null || receivedParamId == null || _isDragging) return;
+    
+    // Convert for consistent comparison
+    final receivedAddressLower = receivedAddress.toLowerCase();
+    final receivedParamIdLower = receivedParamId.toLowerCase();
+    
+    // Log received values for debugging
+    debugPrint('Trying to match: $receivedAddressLower:$receivedParamIdLower');
+    
+    // Try to match against any of our addresses
+    bool matched = false;
+    for (var pair in _addressParamPairs) {
+      final pairAddress = pair['address']?.toLowerCase();
+      final pairParamId = pair['paramId']?.toLowerCase();
+      
+      // Enhanced matching strategy
+      bool addressMatches = false;
+      bool paramIdMatches = false;
+      
+      // Try direct string comparison first
+      addressMatches = pairAddress == receivedAddressLower;
+      paramIdMatches = pairParamId == receivedParamIdLower;
+      
+      // If direct match fails, try numeric comparison for both
+      if (!addressMatches || !paramIdMatches) {
+        try {
+          // For addresses - strip 0x and compare numeric values
+          final pairAddressHex = pairAddress?.replaceAll("0x", "") ?? "";
+          final receivedAddressHex = receivedAddressLower.replaceAll("0x", "");
+          
+          // Try to match by numeric value
+          if (pairAddressHex.isNotEmpty && receivedAddressHex.isNotEmpty) {
+            final pairAddressNum = int.parse(pairAddressHex, radix: 16);
+            final receivedAddressNum = int.parse(receivedAddressHex, radix: 16);
+            addressMatches = pairAddressNum == receivedAddressNum;
+          }
+          
+          // ENHANCED FOR N-GAIN: Handle both master gain and channel gains
+          final pairParamHex = pairParamId?.replaceAll("0x", "") ?? "";
+          final receivedParamHex = receivedParamIdLower.replaceAll("0x", "");
+          
+          if (pairParamHex.isNotEmpty && receivedParamHex.isNotEmpty) {
+            final pairParamNum = int.parse(pairParamHex, radix: 16);
+            final receivedParamNum = int.parse(receivedParamHex, radix: 16);
+            
+            // Check for exact match
+            paramIdMatches = pairParamNum == receivedParamNum;
+            
+            // If no exact match, check for N-gain parameter patterns
+            if (!paramIdMatches) {
+              debugPrint('  Checking N-gain parameter matching for $pairParamNum and $receivedParamNum');
+              
+              // N-gain master (0x60) might map to standard gain (0x0)
+              if ((pairParamNum == 0x0 && receivedParamNum == 0x60) || 
+                  (pairParamNum == 0x60 && receivedParamNum == 0x0)) {
+                paramIdMatches = true;
+                debugPrint('  Special match: N-gain master parameter (0x60) matched with standard gain (0x0)');
+              }
+              // Channel gains: might need to match N-gain channel params (0x0, 0x1, 0x2...)
+              // with other gain controls
+              else if ((pairParamNum >= 0x0 && pairParamNum <= 0x10) && 
+                       (receivedParamNum >= 0x0 && receivedParamNum <= 0x10)) {
+                // This is likely a channel gain parameter - check if they're both in that range
+                debugPrint('  Both parameters appear to be channel gains (0x0-0x10 range)');
+                
+                // For channel gains in N-gain modules (more lenient matching)
+                // If the fader widget is supposed to control a specific channel,
+                // we might want to match it even if channel numbers differ
+                // This assumes the UI is showing the right fader for any channel
+                paramIdMatches = true;
+                debugPrint('  Special match: Both are in channel gain range - assuming match');
+              }
+            }
+          }
+          
+          // Last resort - compare just the last digit of paramId
+          if (!paramIdMatches && pairParamHex.isNotEmpty && receivedParamHex.isNotEmpty) {
+            // For single-digit channel gains (0x0, 0x1, etc.)
+            final pairLastDigit = pairParamHex.substring(pairParamHex.length - 1);
+            final receivedLastDigit = receivedParamHex.substring(receivedParamHex.length - 1);
+            paramIdMatches = pairLastDigit == receivedLastDigit;
+            
+            if (paramIdMatches) {
+              debugPrint('  Last digit match: $pairLastDigit matches $receivedLastDigit');
+            }
+          }
+        } catch (e) {
+          debugPrint('Error in enhanced matching: $e');
+        }
+      }
+      
+      // Additional debug for channel gain detection
+      if (pairParamId != null && receivedParamIdLower != null &&
+          int.tryParse(pairParamId.replaceAll("0x", ""), radix: 16) != null &&
+          int.tryParse(receivedParamIdLower.replaceAll("0x", ""), radix: 16) != null) {
+        final pNum = int.parse(pairParamId.replaceAll("0x", ""), radix: 16);
+        final rNum = int.parse(receivedParamIdLower.replaceAll("0x", ""), radix: 16);
+        
+        if ((pNum >= 0x0 && pNum <= 0x10) || (rNum >= 0x0 && rNum <= 0x10) || 
+            pNum == 0x60 || rNum == 0x60) {
+          debugPrint('  Gain parameter detected - pairParamId: $pairParamId ($pNum), receivedParamId: $receivedParamIdLower ($rNum)');
+        }
+      }
+      
+      // If we have a match, update UI
+      if (addressMatches && paramIdMatches) {
+        debugPrint('  ✓ MATCHED with ${pair['address']}:${pair['paramId']}');
+        matched = true;
+        
+        final now = DateTime.now();
+        
+        // Update UI with visual feedback
+        setState(() {
+          _faderValue = value;
+          _isUpdatingFromDevice = true;
+          _lastUpdateSource = source;
+          _lastUpdateTime = now;
+        });
+        
+        // Clear update indicator after a short delay
+        Future.delayed(const Duration(milliseconds: 500), () {
+          if (mounted) {
+            setState(() {
+              _isUpdatingFromDevice = false;
+            });
+          }
+        });
+        
+        break;
+      } else {
+        // Enhanced debug output
+        debugPrint('  ✗ NO MATCH with ${pair['address']}:${pair['paramId']}');
+        debugPrint('    Address match: $addressMatches, ParamId match: $paramIdMatches');
+        
+        // Extra debug for hex values
+        try {
+          final pairAddressHex = pairAddress?.replaceAll("0x", "") ?? "";
+          final receivedAddressHex = receivedAddressLower.replaceAll("0x", "");
+          final pairParamHex = pairParamId?.replaceAll("0x", "") ?? "";
+          final receivedParamHex = receivedParamIdLower.replaceAll("0x", "");
+          
+          debugPrint('    Hex comparison - Pair: $pairAddressHex:$pairParamHex, Received: $receivedAddressHex:$receivedParamHex');
+        } catch (e) {
+          // Ignore parsing errors in debug
+        }
+      }
+    }
+    
+    if (!matched) {
+      debugPrint('  ✗ NO MATCH FOUND for any address/paramId pair');
     }
   }
   
@@ -631,7 +823,7 @@ class _XmlFaderControlState extends State<XmlFaderControl> {
             ),
           ),
           
-          // Connection and address count
+          // Connection and address count - ENHANCED with better visual indication
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
@@ -649,16 +841,18 @@ class _XmlFaderControlState extends State<XmlFaderControl> {
                 ),
               ),
               const SizedBox(width: 8),
+              // ENHANCED: Multi-address indicator with color
               Icon(
                 Icons.link,
-                color: Colors.blue,
+                color: _addressParamPairs.length > 1 ? Colors.orange : Colors.blue,
                 size: 10,
               ),
               const SizedBox(width: 2),
               Text(
                 '${_addressParamPairs.length}',
                 style: TextStyle(
-                  color: Colors.blue,
+                  color: _addressParamPairs.length > 1 ? Colors.orange : Colors.blue,
+                  fontWeight: _addressParamPairs.length > 1 ? FontWeight.bold : FontWeight.normal,
                   fontSize: 10,
                 ),
               ),
@@ -704,17 +898,27 @@ class _XmlFaderControlState extends State<XmlFaderControl> {
             ),
           ),
           
-          // Show a chip or indicator for number of addresses
+          // ENHANCED: Multi-address indicator for more clarity
           _addressParamPairs.length > 1 
             ? Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                 decoration: BoxDecoration(
-                  color: Colors.blue.withOpacity(0.3),
+                  color: Colors.orange.withOpacity(0.3),
                   borderRadius: BorderRadius.circular(12),
                 ),
-                child: Text(
-                  '${_addressParamPairs.length} destinations',
-                  style: const TextStyle(color: Colors.white, fontSize: 10),
+                child: Column(
+                  children: [
+                    Text(
+                      'Multi-fader linked to ${_addressParamPairs.length} destinations',
+                      style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                    ),
+                    // Compact addresses list
+                    Text(
+                      _addressParamPairs.map((p) => p['address']?.substring(0, 14)).join(', '),
+                      style: TextStyle(color: Colors.grey[400], fontSize: 8),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
                 ),
               )
             : Text(
@@ -743,6 +947,36 @@ class _XmlFaderControlState extends State<XmlFaderControl> {
         
         // Also report via FaderComm
         _faderComm.reportFaderMoved(pair['address']!, pair['paramId']!, value);
+        
+        // ENHANCED: For N-gain modules, also send to both master and channel parameters
+        try {
+          final paramId = pair['paramId']!;
+          final paramHex = paramId.toLowerCase().replaceAll("0x", "");
+          final paramNum = int.tryParse(paramHex, radix: 16);
+          
+          if (paramNum != null) {
+            // If this is a standard gain param (0x0), also send to master gain (0x60)
+            if (paramNum == 0) {
+              _controlService.setFaderValue(pair['address']!, "0x60", value);
+              _faderComm.reportFaderMoved(pair['address']!, "0x60", value);
+              debugPrint('  Also sending to N-gain master: ${pair['address']}:0x60');
+            }
+            // If this is master gain (0x60), also send to channel 1 (0x0)
+            else if (paramNum == 0x60) {
+              _controlService.setFaderValue(pair['address']!, "0x0", value);
+              _faderComm.reportFaderMoved(pair['address']!, "0x0", value);
+              debugPrint('  Also sending to Channel 1: ${pair['address']}:0x0');
+            }
+            // If this is a channel gain, also send to master gain
+            else if (paramNum > 0 && paramNum <= 0x10) {
+              _controlService.setFaderValue(pair['address']!, "0x60", value);
+              _faderComm.reportFaderMoved(pair['address']!, "0x60", value);
+              debugPrint('  Also sending to N-gain master: ${pair['address']}:0x60');
+            }
+          }
+        } catch (e) {
+          debugPrint('Error in sending to additional N-gain parameters: $e');
+        }
       }
     } catch (e) {
       debugPrint('Error sending fader value: $e');
@@ -798,6 +1032,10 @@ class _XmlSourceControlState extends State<XmlSourceControl> {
   // Track subscriptions
   List<StreamSubscription> _subscriptions = [];
   
+  // Enhanced data for multi-address debugging
+  Map<String, int> _lastValueByAddress = {};
+  Map<String, DateTime> _lastUpdateByAddress = {};
+  
   // UI update info
   bool _isUpdatingFromDevice = false;
   String _lastUpdateSource = "";
@@ -813,9 +1051,14 @@ class _XmlSourceControlState extends State<XmlSourceControl> {
     _sourceOptions = _getSourceOptions();
     
     // Debug logging
-    debugPrint('XmlSourceControl: Initializing ${widget.control.name}');
-    debugPrint('  Found ${_addressParamPairs.length} address/parameter pairs');
-    debugPrint('  Source Options: ${_sourceOptions.length}');
+    if (_addressParamPairs.length > 1) {
+      debugPrint('MULTI-ADDRESS SOURCE SELECTOR: ${widget.control.name} has ${_addressParamPairs.length} address/parameter pairs:');
+      for (var pair in _addressParamPairs) {
+        debugPrint('  • ${pair['address']}:${pair['paramId']}');
+      }
+    }
+    
+    debugPrint('XmlSourceControl: Source Options: ${_sourceOptions.length}');
     
     // Subscribe to source updates for all addresses
     _subscribeToUpdates();
@@ -861,82 +1104,23 @@ class _XmlSourceControlState extends State<XmlSourceControl> {
     }
     _subscriptions.clear();
     
-    // Subscribe to source updates directly
+    // IMPROVED: Better source update handling with enhanced matching logic
     var sourceSub = _controlService.onSourceUpdate.listen((data) {
-      final dataAddress = widget.normalizeAddressCase(data['address'].toString());
-      final dataParamId = widget.normalizeParamIdCase(data['paramId'].toString());
+      final receivedAddress = widget.normalizeAddressCase(data['address'].toString());
+      final receivedParamId = widget.normalizeParamIdCase(data['paramId'].toString());
+      final value = data['value'] as int;
       
-      // Log what we received for debugging
+      // Log received update for debugging
       debugPrint('XmlSourceControl ${widget.control.name}: Received update, checking if matches:');
-      debugPrint('  Received: $dataAddress:$dataParamId, value: ${data['value']}');
+      debugPrint('  Received: $receivedAddress:$receivedParamId, value: $value');
       
-      // Check if this update is for any of our address/paramId pairs with more flexible matching
-      bool matched = false;
-      for (var pair in _addressParamPairs) {
-        final pairAddress = pair['address']?.toLowerCase();
-        final pairParamId = pair['paramId']?.toLowerCase();
-        final dataAddressLower = dataAddress?.toLowerCase();
-        final dataParamIdLower = dataParamId?.toLowerCase();
-        
-        // Try various matching strategies
-        bool addressMatches = pairAddress == dataAddressLower;
-        
-        // For paramId, try both hex and decimal representations
-        bool paramIdMatches = pairParamId == dataParamIdLower;
-        
-        // Try to convert between formats (decimal/hex) if direct match fails
-        if (!paramIdMatches && pairParamId != null && dataParamId != null) {
-          try {
-            // Try parsing as hex and comparing decimal values
-            final pairDecimal = int.parse(pairParamId.replaceAll('0x', ''), radix: 16);
-            final dataDecimal = int.parse(dataParamId.replaceAll('0x', ''), radix: 16);
-            paramIdMatches = pairDecimal == dataDecimal;
-            
-            if (!paramIdMatches) {
-              // Another format: compare the last two characters of hex representation
-              final pairShort = pairParamId.replaceAll('0x', '').padLeft(2, '0').substring(0, 2).toLowerCase();
-              final dataShort = dataParamId.replaceAll('0x', '').padLeft(2, '0').substring(0, 2).toLowerCase();
-              paramIdMatches = pairShort == dataShort;
-            }
-          } catch (e) {
-            debugPrint('Error comparing paramIds: $e');
-          }
-        }
-        
-        if (addressMatches && paramIdMatches) {
-          debugPrint('  ✓ MATCHED with ${pair['address']}:${pair['paramId']}');
-          matched = true;
-          
-          final now = DateTime.now();
-          
-          // Update UI with visual feedback
-          setState(() {
-            _sourceValue = data['value'] as int;
-            _isUpdatingFromDevice = true;
-            _lastUpdateSource = "ControlService";
-            _lastUpdateTime = now;
-            debugPrint('XmlSourceControl ${widget.control.name}: Updated source value: $_sourceValue from ${pair['address']}:${pair['paramId']}');
-          });
-          
-          // Clear update indicator after a short delay
-          Future.delayed(const Duration(milliseconds: 500), () {
-            if (mounted) {
-              setState(() {
-                _isUpdatingFromDevice = false;
-              });
-            }
-          });
-          
-          break;
-        } else {
-          debugPrint('  ✗ NO MATCH with ${pair['address']}:${pair['paramId']}');
-          debugPrint('    Address match: $addressMatches, ParamId match: $paramIdMatches');
-        }
-      }
+      // Store value by address for tracking
+      final addressKey = '$receivedAddress:$receivedParamId';
+      _lastValueByAddress[addressKey] = value;
+      _lastUpdateByAddress[addressKey] = DateTime.now();
       
-      if (!matched) {
-        debugPrint('  ✗ NO MATCH FOUND for any address/paramId pair');
-      }
+      // Check with enhanced matching logic
+      _tryMatchAndUpdateSource(receivedAddress, receivedParamId, value, "ControlService");
     });
     _subscriptions.add(sourceSub);
     
@@ -946,6 +1130,113 @@ class _XmlSourceControlState extends State<XmlSourceControl> {
         _controlService.subscribeSourceValue(pair['address']!, pair['paramId']!);
         debugPrint('XmlSourceControl: Subscribed to ${pair['address']}:${pair['paramId']}');
       }
+    }
+  }
+  
+  // ENHANCED: New centralized matching logic with more flexible address comparison
+  void _tryMatchAndUpdateSource(String? receivedAddress, String? receivedParamId, int value, String source) {
+    if (receivedAddress == null || receivedParamId == null) return;
+    
+    // Convert for consistent comparison
+    final receivedAddressLower = receivedAddress.toLowerCase();
+    final receivedParamIdLower = receivedParamId.toLowerCase();
+    
+    // Try to match against any of our addresses
+    bool matched = false;
+    for (var pair in _addressParamPairs) {
+      final pairAddress = pair['address']?.toLowerCase();
+      final pairParamId = pair['paramId']?.toLowerCase();
+      
+      // Enhanced matching strategy
+      bool addressMatches = false;
+      bool paramIdMatches = false;
+      
+      // Try direct string comparison first
+      addressMatches = pairAddress == receivedAddressLower;
+      paramIdMatches = pairParamId == receivedParamIdLower;
+      
+      // If direct match fails, try numeric comparison for both
+      if (!addressMatches || !paramIdMatches) {
+        try {
+          // For addresses - strip 0x and compare numeric values
+          final pairAddressHex = pairAddress?.replaceAll("0x", "") ?? "";
+          final receivedAddressHex = receivedAddressLower.replaceAll("0x", "");
+          
+          // Try to match by numeric value
+          if (pairAddressHex.isNotEmpty && receivedAddressHex.isNotEmpty) {
+            final pairAddressNum = int.parse(pairAddressHex, radix: 16);
+            final receivedAddressNum = int.parse(receivedAddressHex, radix: 16);
+            addressMatches = pairAddressNum == receivedAddressNum;
+          }
+          
+          // For paramIds - strip 0x and compare numeric values 
+          final pairParamHex = pairParamId?.replaceAll("0x", "") ?? "";
+          final receivedParamHex = receivedParamIdLower.replaceAll("0x", "");
+          
+          if (pairParamHex.isNotEmpty && receivedParamHex.isNotEmpty) {
+            final pairParamNum = int.parse(pairParamHex, radix: 16);
+            final receivedParamNum = int.parse(receivedParamHex, radix: 16);
+            paramIdMatches = pairParamNum == receivedParamNum;
+          }
+          
+          // Last resort - compare just the last digit of paramId
+          if (!paramIdMatches && pairParamHex.isNotEmpty && receivedParamHex.isNotEmpty) {
+            final pairLastDigit = pairParamHex.substring(pairParamHex.length - 1);
+            final receivedLastDigit = receivedParamHex.substring(receivedParamHex.length - 1);
+            paramIdMatches = pairLastDigit == receivedLastDigit;
+          }
+        } catch (e) {
+          debugPrint('Error in enhanced matching: $e');
+        }
+      }
+      
+      // If we have a match, update UI
+      if (addressMatches && paramIdMatches) {
+        debugPrint('  ✓ MATCHED with ${pair['address']}:${pair['paramId']}');
+        matched = true;
+        
+        final now = DateTime.now();
+        
+        // Update UI with visual feedback
+        setState(() {
+          _sourceValue = value;
+          _isUpdatingFromDevice = true;
+          _lastUpdateSource = source;
+          _lastUpdateTime = now;
+          debugPrint('XmlSourceControl ${widget.control.name}: Updated source value: $_sourceValue from ${pair['address']}:${pair['paramId']}');
+        });
+        
+        // Clear update indicator after a short delay
+        Future.delayed(const Duration(milliseconds: 500), () {
+          if (mounted) {
+            setState(() {
+              _isUpdatingFromDevice = false;
+            });
+          }
+        });
+        
+        break;
+      } else {
+        // Enhanced debug output
+        debugPrint('  ✗ NO MATCH with ${pair['address']}:${pair['paramId']}');
+        debugPrint('    Address match: $addressMatches, ParamId match: $paramIdMatches');
+        
+        // Extra debug for hex values
+        try {
+          final pairAddressHex = pairAddress?.replaceAll("0x", "") ?? "";
+          final receivedAddressHex = receivedAddressLower.replaceAll("0x", "");
+          final pairParamHex = pairParamId?.replaceAll("0x", "") ?? "";
+          final receivedParamHex = receivedParamIdLower.replaceAll("0x", "");
+          
+          debugPrint('    Hex comparison - Pair: $pairAddressHex:$pairParamHex, Received: $receivedAddressHex:$receivedParamHex');
+        } catch (e) {
+          // Ignore parsing errors in debug
+        }
+      }
+    }
+    
+    if (!matched) {
+      debugPrint('  ✗ NO MATCH FOUND for any address/paramId pair');
     }
   }
   
@@ -1082,7 +1373,7 @@ class _XmlSourceControlState extends State<XmlSourceControl> {
           ),
           const SizedBox(height: 8),
           
-          // Connection and address count
+          // Connection and address count - ENHANCED for multi-address
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
@@ -1100,16 +1391,18 @@ class _XmlSourceControlState extends State<XmlSourceControl> {
                 ),
               ),
               const SizedBox(width: 8),
+              // ENHANCED: Multi-address indicator with color
               Icon(
                 Icons.link,
-                color: Colors.blue,
+                color: _addressParamPairs.length > 1 ? Colors.orange : Colors.blue,
                 size: 10,
               ),
               const SizedBox(width: 2),
               Text(
                 '${_addressParamPairs.length}',
                 style: TextStyle(
-                  color: Colors.blue,
+                  color: _addressParamPairs.length > 1 ? Colors.orange : Colors.blue,
+                  fontWeight: _addressParamPairs.length > 1 ? FontWeight.bold : FontWeight.normal,
                   fontSize: 10,
                 ),
               ),
@@ -1164,17 +1457,27 @@ class _XmlSourceControlState extends State<XmlSourceControl> {
               child: const Text('More Options...', style: TextStyle(fontSize: 10)),
             ),
           
-          // Show a chip or indicator for number of addresses
+          // ENHANCED: Multi-address indicator for more clarity
           _addressParamPairs.length > 1 
             ? Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                 decoration: BoxDecoration(
-                  color: Colors.blue.withOpacity(0.3),
+                  color: Colors.orange.withOpacity(0.3),
                   borderRadius: BorderRadius.circular(12),
                 ),
-                child: Text(
-                  '${_addressParamPairs.length} destinations',
-                  style: const TextStyle(color: Colors.white, fontSize: 10),
+                child: Column(
+                  children: [
+                    Text(
+                      'Multi-selector linked to ${_addressParamPairs.length} destinations',
+                      style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                    ),
+                    // Compact addresses list
+                    Text(
+                      _addressParamPairs.map((p) => p['address']?.substring(0, 14)).join(', '),
+                      style: TextStyle(color: Colors.grey[400], fontSize: 8),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
                 ),
               )
             : Text(
@@ -1187,7 +1490,7 @@ class _XmlSourceControlState extends State<XmlSourceControl> {
     );
   }
   
-  // Select a source and send to all addresses
+  // ENHANCED: Select a source and send to ALL linked addresses
   void _selectSource(int index) {
     if (!widget.isConnected || _addressParamPairs.isEmpty) return;
     
