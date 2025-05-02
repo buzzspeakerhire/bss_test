@@ -1,3 +1,5 @@
+// lib/services/message_processor_service.dart
+
 import 'dart:async';
 import 'dart:isolate';
 import 'package:flutter/foundation.dart';
@@ -20,40 +22,37 @@ class MessageProcessorService {
   Stream<Map<String, dynamic>> get onProcessedMessage => _processedMessageController.stream;
   
   // Flag to indicate if direct processing should be used
-  bool _useDirectProcessing = true; // Changed to true to avoid isolate issues
+  bool _useDirectProcessing = true;
   
-  // Initialize the isolate for message processing
+  // Initialize the service - simplified to use direct processing for reliability
   Future<void> initialize() async {
     // If already initialized, just return
     if (_messageProcessorIsolate != null) return;
     
-    Logger().log('Initializing message processor service - using direct processing');
+    Logger().log('Initializing message processor service - using direct processing for reliability');
     
-    // Skip isolate creation and use direct processing for more reliable debugging
+    // Use direct processing for more reliable operation
     _useDirectProcessing = true;
     return;
   }
   
   // Process a message
   void processMessage(List<int> message) {
-    if (_sendPort != null && !_useDirectProcessing) {
-      // Send to isolate
-      _sendPort!.send(message);
-    } else {
-      // Fallback to direct processing
-      try {
-        Logger().log('Processing message directly (length: ${message.length})');
-        final processedMessage = _processMessageDirect(message);
-        if (processedMessage != null) {
-          _safeAddToStream(_processedMessageController, processedMessage);
-        }
-      } catch (e) {
-        Logger().log('Error processing message directly: $e');
+    try {
+      Logger().log('Processing message of length: ${message.length}');
+      final processedMessage = _processMessageDirect(message);
+      if (processedMessage != null) {
+        Logger().log('Successfully processed message: ${processedMessage['type']}');
+        _safeAddToStream(_processedMessageController, processedMessage);
+      } else {
+        Logger().log('Failed to process message: null result');
       }
+    } catch (e) {
+      Logger().log('Error processing message: $e');
     }
   }
   
-  // Direct processing method as fallback
+  // Direct processing method
   Map<String, dynamic>? _processMessageDirect(List<int> message) {
     try {
       return _processMessageInIsolate(message);
@@ -63,33 +62,7 @@ class MessageProcessorService {
     }
   }
   
-  // Static entry point for the isolate
-  static void _messageProcessorEntryPoint(SendPort sendPort) {
-    final ReceivePort receivePort = ReceivePort();
-    sendPort.send(receivePort.sendPort);
-    
-    receivePort.listen((message) {
-      if (message is List<int>) {
-        // Process the message
-        try {
-          final processedMessage = _processMessageInIsolate(message);
-          if (processedMessage != null) {
-            sendPort.send({
-              'type': 'processedMessage',
-              'data': processedMessage
-            });
-          }
-        } catch (e) {
-          sendPort.send({
-            'type': 'log',
-            'message': 'Error processing message in isolate: $e'
-          });
-        }
-      }
-    });
-  }
-  
-  // Process a message in the isolate or directly
+  // Process a message - static implementation used by both direct and isolate paths
   static Map<String, dynamic>? _processMessageInIsolate(List<int> message) {
     try {
       // Check for valid message length
@@ -98,10 +71,11 @@ class MessageProcessorService {
         return null;
       }
       
-      // Log the hex representation of the message for debugging
+      // Log the hex representation of the message
       String hexMessage = message.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
       debugPrint('Processing message: $hexMessage');
       
+      // Extract the body (between start and end bytes)
       List<int> body = message.sublist(1, message.length - 1);
       
       // Perform byte substitution reversal
@@ -131,7 +105,7 @@ class MessageProcessorService {
         }
       }
       
-      // Log unsubstituted body for debugging
+      // Log unsubstituted body
       String hexUnsubBody = unsubstitutedBody.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
       debugPrint('Unsubstituted body: $hexUnsubBody');
       
@@ -176,7 +150,8 @@ class MessageProcessorService {
                     unsubstitutedBody[12];
         
         // Debug output for SET message
-        debugPrint('SET message - address: ${address.map((b) => b.toRadixString(16).padLeft(2, '0')).join('')}, paramId: ${paramId.toRadixString(16)}, value: $value');
+        String addressHex = address.map((b) => b.toRadixString(16).padLeft(2, '0')).join('');
+        debugPrint('SET message - address: 0x$addressHex, paramId: 0x${paramId.toRadixString(16)}, value: $value');
         
         return {
           'type': 'SET',
@@ -199,7 +174,8 @@ class MessageProcessorService {
                     unsubstitutedBody[12];
         
         // Debug output for SET_PERCENT message
-        debugPrint('SET_PERCENT message - address: ${address.map((b) => b.toRadixString(16).padLeft(2, '0')).join('')}, paramId: ${paramId.toRadixString(16)}, value: $value');
+        String addressHex = address.map((b) => b.toRadixString(16).padLeft(2, '0')).join('');
+        debugPrint('SET_PERCENT message - address: 0x$addressHex, paramId: 0x${paramId.toRadixString(16)}, value: $value');
         
         return {
           'type': 'SET_PERCENT',

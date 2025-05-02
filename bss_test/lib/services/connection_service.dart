@@ -1,3 +1,5 @@
+// lib/services/connection_service.dart
+
 import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
@@ -185,7 +187,7 @@ class ConnectionService {
         final hexMessage = message.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
         Logger().log('Extracted complete message: $hexMessage (${message.length} bytes)');
         
-        // Forward the message to the message processor - use non-blocking call
+        // Forward the message for processing - critical for two-way communication
         _safeAddToStream(_messageProcessorController, message);
       }
     } catch (e) {

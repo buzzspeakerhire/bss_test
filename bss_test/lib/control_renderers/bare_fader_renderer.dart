@@ -1,7 +1,6 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
 import '../models/control_model.dart';
-import '../services/fader_communication.dart';
+import '../services/global_state.dart';
 
 class BareFaderRenderer extends StatefulWidget {
   final ControlModel control;
@@ -16,96 +15,97 @@ class BareFaderRenderer extends StatefulWidget {
 }
 
 class _BareFaderRendererState extends State<BareFaderRenderer> {
-  double _value = 0.5;
+  final _globalState = GlobalState();
   bool _isDragging = false;
-  final _communication = FaderCommunication();
-  StreamSubscription? _updateSubscription;
-  StreamSubscription? _connectionSubscription;
-  bool _isConnected = false;
-  Color _faderColor = Colors.grey;
+  double _localValue = 0.5;
 
   @override
   void initState() {
     super.initState();
     
     try {
-      // Listen for fader updates from the device
-      _updateSubscription = _communication.onFaderUpdate.listen((data) {
-        try {
-          final address = widget.control.getPrimaryAddress();
-          final paramId = widget.control.getPrimaryParameterId();
-          
-          // Check if this update is for this fader
-          if (address == data['address'] && paramId == data['paramId'] && !_isDragging) {
-            setState(() {
-              _value = data['value'];
-            });
-            debugPrint('BareFaderRenderer: Received fader update from device - ${widget.control.name}: ${_value.toStringAsFixed(3)}');
-          }
-        } catch (e) {
-          debugPrint('Error handling fader update: $e');
-        }
-      });
+      final address = widget.control.getPrimaryAddress();
+      final paramId = widget.control.getPrimaryParameterId();
       
-      // Listen for connection state changes
-      _connectionSubscription = _communication.onConnectionChanged.listen((connected) {
-        try {
-          setState(() {
-            _isConnected = connected;
-            _faderColor = connected ? Colors.blue : Colors.grey;
-          });
-          debugPrint('BareFaderRenderer: Connection state changed to $_isConnected');
-        } catch (e) {
-          debugPrint('Error handling connection state change: $e');
-        }
-      });
+      if (address == null || paramId == null) {
+        debugPrint('BareFaderRenderer: Missing address or paramId for ${widget.control.name}');
+        return;
+      }
       
-      // Initialize connection state
-      _isConnected = _communication.isConnected;
-      _faderColor = _isConnected ? Colors.blue : Colors.grey;
+      debugPrint('BareFaderRenderer: Initializing ${widget.control.name} with address=$address, paramId=$paramId');
+      
+      // Set initial local value
+      _localValue = _globalState.getFaderValue(address, paramId);
+      
+      debugPrint('BareFaderRenderer: ${widget.control.name} initialized, initial value: ${_localValue.toStringAsFixed(3)}');
     } catch (e) {
       debugPrint('Error in BareFaderRenderer initState: $e');
     }
   }
 
   @override
-  void dispose() {
-    try {
-      _updateSubscription?.cancel();
-      _connectionSubscription?.cancel();
-    } catch (e) {
-      debugPrint('Error in BareFaderRenderer dispose: $e');
-    }
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
     try {
-      return SliderTheme(
-        data: SliderThemeData(
-          trackHeight: 25.0, // Make the track taller for easier interaction
-          thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 15.0), // Bigger thumb
-          overlayShape: const RoundSliderOverlayShape(overlayRadius: 20.0), // Bigger tap area
-          trackShape: const RectangularSliderTrackShape(),
-          thumbColor: Colors.white,
-          activeTrackColor: _faderColor,
-          inactiveTrackColor: Colors.grey[300],
-        ),
-        child: RotatedBox(
-          quarterTurns: 3, // Keep slider vertical
-          child: Slider(
-            value: _value,
-            onChangeStart: (_) => _isDragging = true,
-            onChanged: (value) {
-              setState(() => _value = value);
-            },
-            onChangeEnd: (value) {
-              _isDragging = false;
-              _reportFaderValue(value);
-            },
+      final address = widget.control.getPrimaryAddress();
+      final paramId = widget.control.getPrimaryParameterId();
+      
+      if (address == null || paramId == null) {
+        // Fallback for controls without proper addressing
+        return Container(
+          width: 50,
+          height: 100,
+          color: Colors.red[100],
+          child: const Center(
+            child: Text('Invalid Fader', style: TextStyle(color: Colors.red, fontSize: 10)),
           ),
-        ),
+        );
+      }
+      
+      // Listen to the global state
+      return ListenableBuilder(
+        listenable: _globalState,
+        builder: (context, child) {
+          // Get the current value from global state
+          final value = _globalState.getFaderValue(address, paramId);
+          
+          // Update local value if it's different and not dragging
+          if (!_isDragging && (_localValue - value).abs() > 0.001) {
+            _localValue = value;
+            debugPrint('BareFaderRenderer: Updated from global state: ${value.toStringAsFixed(3)}');
+          }
+          
+          return SliderTheme(
+            data: SliderThemeData(
+              trackHeight: 25.0,
+              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 15.0),
+              overlayShape: const RoundSliderOverlayShape(overlayRadius: 20.0),
+              trackShape: const RectangularSliderTrackShape(),
+              thumbColor: Colors.white,
+              activeTrackColor: _globalState.isConnected ? Colors.blue : Colors.grey,
+              inactiveTrackColor: Colors.grey[300],
+            ),
+            child: RotatedBox(
+              quarterTurns: 3, // Keep slider vertical
+              child: Slider(
+                value: _localValue,
+                onChangeStart: (_) {
+                  debugPrint('BareFaderRenderer: Starting drag on ${widget.control.name}');
+                  _isDragging = true;
+                },
+                onChanged: (newValue) {
+                  setState(() {
+                    _localValue = newValue;
+                  });
+                },
+                onChangeEnd: (newValue) {
+                  debugPrint('BareFaderRenderer: Ending drag on ${widget.control.name}');
+                  _isDragging = false;
+                  _reportFaderValue(address, paramId, newValue);
+                },
+              ),
+            ),
+          );
+        },
       );
     } catch (e) {
       debugPrint('Error in BareFaderRenderer build: $e');
@@ -120,13 +120,10 @@ class _BareFaderRendererState extends State<BareFaderRenderer> {
     }
   }
 
-  void _reportFaderValue(double value) {
+  void _reportFaderValue(String address, String paramId, double value) {
     try {
-      final address = widget.control.getPrimaryAddress();
-      final paramId = widget.control.getPrimaryParameterId();
-      
-      if (address != null && paramId != null && _isConnected) {
-        _communication.reportFaderMoved(address, paramId, value);
+      if (_globalState.isConnected) {
+        _globalState.setFaderValue(address, paramId, value);
         debugPrint('BareFaderRenderer: Fader ${widget.control.name} moved - value: ${value.toStringAsFixed(3)}');
       }
     } catch (e) {

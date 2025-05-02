@@ -1,3 +1,5 @@
+// lib/services/control_communication_service.dart
+
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'connection_service.dart';
@@ -20,6 +22,7 @@ class ControlCommunicationService {
   final _connectionService = ConnectionService();
   final _bssProtocolService = BssProtocolService();
   final _messageProcessorService = MessageProcessorService();
+  final _faderComm = FaderCommunication(); // Store a direct reference to the singleton
   
   // Stream controllers for control values
   final _faderUpdateController = StreamController<Map<String, dynamic>>.broadcast();
@@ -61,16 +64,13 @@ class ControlCommunicationService {
       
       Logger().log('Control communication service initializing...');
       
-      // Create fader communication instance
-      final faderComm = FaderCommunication();
-      
       // Listen for connection status changes
       _connectionService.onConnectionStatusChanged.listen((isConnected) {
         try {
           Logger().log('Connection status changed: $isConnected');
           
           // Update the connection state in the FaderCommunication service
-          faderComm.setConnectionState(isConnected);
+          _faderComm.setConnectionState(isConnected);
           
           if (isConnected) {
             // Subscribe to parameters after connection
@@ -104,10 +104,10 @@ class ControlCommunicationService {
       });
       
       // Listen for fader move events from UI components
-      faderComm.onFaderMoved.listen((data) {
+      _faderComm.onFaderMoved.listen((data) {
         try {
           // When a fader is moved in the UI, send the update to the device
-          if (isConnected) {
+          if (_connectionService.isConnected) {
             Logger().log('UI Fader moved: ${data['address']} ${data['paramId']} ${data['value']}');
             setFaderValue(
               data['address'] as String,
@@ -121,29 +121,27 @@ class ControlCommunicationService {
       });
       
       // Listen for button state change events from UI components
-      if (faderComm is FaderCommunication) { // Check if it has button support
+      _faderComm.onButtonStateChanged.listen((data) {
         try {
-          faderComm.onButtonStateChanged.listen((data) {
-            // When a button state changes in the UI, send the update to the device
-            if (isConnected) {
-              Logger().log('UI Button state changed: ${data['address']} ${data['paramId']} ${data['state']}');
-              setButtonState(
-                data['address'] as String,
-                data['paramId'] as String,
-                data['state'] as bool,
-              );
-            }
-          });
+          // When a button state changes in the UI, send the update to the device
+          if (_connectionService.isConnected) {
+            Logger().log('UI Button state changed: ${data['address']} ${data['paramId']} ${data['state']}');
+            setButtonState(
+              data['address'] as String,
+              data['paramId'] as String,
+              data['state'] as bool,
+            );
+          }
         } catch (e) {
-          Logger().log('Error setting up button state changed listener: $e');
+          Logger().log('Error handling button state changed event: $e');
         }
-      }
+      });
       
       // Forward fader updates to the FaderCommunication service
       onFaderUpdate.listen((data) {
         try {
           Logger().log('Device fader update received, forwarding to UI: ${data.toString()}');
-          faderComm.updateFaderFromDevice(
+          _faderComm.updateFaderFromDevice(
             data['address'] as String,
             data['paramId'] as String,
             data['value'] as double,
@@ -157,7 +155,7 @@ class ControlCommunicationService {
       onButtonUpdate.listen((data) {
         try {
           Logger().log('Device button update received, forwarding to UI: ${data.toString()}');
-          faderComm.updateButtonFromDevice(
+          _faderComm.updateButtonFromDevice(
             data['address'] as String,
             data['paramId'] as String,
             data['value'] != 0, // Convert int to bool
@@ -439,11 +437,9 @@ class ControlCommunicationService {
         
         Logger().log('Processing message - Address: $addressHex, ParamId: $paramIdHex, Value: $value');
         
-        // Simplify control type detection to improve stability
-        // Use paramId to determine control type
+        // Determine control type based on address and paramId
         if (paramId == 0) {
-          // This is likely a fader or meter
-          // Determine based on address pattern
+          // This could be a fader, meter, or source selector (all use paramId 0)
           if (addressHex.toLowerCase().contains("0200")) {
             // This is likely a meter
             _lastMeterUpdateTime = DateTime.now().millisecondsSinceEpoch;
@@ -455,6 +451,7 @@ class ControlCommunicationService {
             // Clamp to valid range
             normalizedValue = normalizedValue.clamp(0.0, 1.0);
             
+            // Send update to meter stream
             _safeAddToStream(_meterUpdateController, {
               'address': addressHex,
               'paramId': paramIdHex,
@@ -463,7 +460,7 @@ class ControlCommunicationService {
               'raw': value
             });
             
-            // Only log occasionally to avoid spam
+            // Log occasionally
             if (DateTime.now().second % 5 == 0) {
               Logger().log('Updated meter value: ${normalizedValue.toStringAsFixed(3)}, ${dbValue.toStringAsFixed(1)}dB');
             }
@@ -480,6 +477,8 @@ class ControlCommunicationService {
             // This is likely a fader
             final normalizedValue = _bssProtocolService.faderValueToNormalized(value);
             Logger().log('Processing fader update with raw value: $value, normalized: ${normalizedValue.toStringAsFixed(3)}');
+            
+            // Send update to fader stream
             _safeAddToStream(_faderUpdateController, {
               'address': addressHex,
               'paramId': paramIdHex,
@@ -492,6 +491,8 @@ class ControlCommunicationService {
         else if (paramId == 1) {
           // This is likely a button
           Logger().log('Processing button update with value: $value');
+          
+          // Send update to button stream
           _safeAddToStream(_buttonUpdateController, {
             'address': addressHex,
             'paramId': paramIdHex,
@@ -501,7 +502,7 @@ class ControlCommunicationService {
           Logger().log('Updated button state: ${value != 0}');
         }
         else {
-          // Unknown parameter ID - log it for debugging
+          // Unknown parameter ID
           Logger().log('Received message for unknown parameter ID: $paramId, address: $addressHex, value: $value');
         }
       } else if (message['type'] == 'ACK') {
