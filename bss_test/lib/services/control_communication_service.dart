@@ -479,8 +479,32 @@ class ControlCommunicationService {
         // Determine control type based on address and paramId
         if (paramId == 0) {
           // This could be a fader, meter, or source selector (all use paramId 0)
-          if (addressHex.toLowerCase().contains("0200")) {
-            // This is likely a meter
+          // IMPORTANT: Check address to distinguish between different controls
+          String addressLower = addressHex.toLowerCase();
+          
+          if (addressLower.contains("0100")) {
+            // This is a fader - primary fix focus here!
+            Logger().log('Identified FADER message for paramId 0 with address: $addressHex');
+            
+            // Calculate normalized value for fader
+            double normalizedValue = _bssProtocolService.faderValueToNormalized(value);
+            Logger().log('Calculated normalized fader value: ${normalizedValue.toStringAsFixed(3)} from raw: $value');
+            
+            // Send update to fader stream
+            _safeAddToStream(_faderUpdateController, {
+              'address': addressHex,
+              'paramId': paramIdHex,
+              'value': normalizedValue,
+              'raw': value
+            });
+            
+            // Also directly update via FaderCommunication for UI refresh
+            _faderComm.updateFaderFromDevice(addressHex, paramIdHex, normalizedValue);
+            
+            Logger().log('Updated fader value: ${normalizedValue.toStringAsFixed(3)}');
+          }
+          else if (addressLower.contains("0200")) {
+            // This is a meter
             _lastMeterUpdateTime = DateTime.now().millisecondsSinceEpoch;
             
             // Convert value to normalized meter level (0.0-1.0)
@@ -503,8 +527,9 @@ class ControlCommunicationService {
             if (DateTime.now().second % 5 == 0) {
               Logger().log('Updated meter value: ${normalizedValue.toStringAsFixed(3)}, ${dbValue.toStringAsFixed(1)}dB');
             }
-          } else if (addressHex.toLowerCase().contains("0300")) {
-            // This is likely a source selector
+          } 
+          else if (addressLower.contains("0300")) {
+            // This is a source selector
             _safeAddToStream(_sourceUpdateController, {
               'address': addressHex,
               'paramId': paramIdHex,
@@ -512,19 +537,13 @@ class ControlCommunicationService {
               'raw': value
             });
             Logger().log('Updated source selection: $value');
-          } else {
-            // This is likely a fader
-            // Use normalizedValue if available, otherwise calculate it
-            double normalizedValue;
-            if (message['normalizedValue'] != null) {
-              normalizedValue = message['normalizedValue'];
-              Logger().log('Using provided normalized value: ${normalizedValue.toStringAsFixed(3)}');
-            } else {
-              normalizedValue = _bssProtocolService.faderValueToNormalized(value);
-              Logger().log('Calculated normalized value: ${normalizedValue.toStringAsFixed(3)}');
-            }
+          }
+          else {
+            // Generic handler for paramId 0 controls
+            Logger().log('Generic paramId 0 control detected: $addressHex, value: $value');
             
-            // Send update to fader stream
+            // Let's try to handle as fader anyway as a fallback
+            double normalizedValue = _bssProtocolService.faderValueToNormalized(value);
             _safeAddToStream(_faderUpdateController, {
               'address': addressHex,
               'paramId': paramIdHex,
@@ -532,32 +551,26 @@ class ControlCommunicationService {
               'raw': value
             });
             
-            // Also directly update via FaderCommunication
+            // Also notify through FaderCommunication
             _faderComm.updateFaderFromDevice(addressHex, paramIdHex, normalizedValue);
-            
-            Logger().log('Updated fader value: ${normalizedValue.toStringAsFixed(3)}');
           }
         } 
         else if (paramId == 1) {
-          // This is likely a button
+          // This is a button
           Logger().log('Processing button update with value: $value');
-          
-          // Get boolean state from message if available
-          bool buttonState = message['booleanState'] != null ? message['booleanState'] : (value != 0);
           
           // Send update to button stream
           _safeAddToStream(_buttonUpdateController, {
             'address': addressHex,
             'paramId': paramIdHex,
             'value': value, // Button state (0 or 1)
-            'state': buttonState,
             'raw': value
           });
           
           // Also directly update via FaderCommunication
-          _faderComm.updateButtonFromDevice(addressHex, paramIdHex, buttonState);
+          _faderComm.updateButtonFromDevice(addressHex, paramIdHex, value != 0);
           
-          Logger().log('Updated button state: $buttonState');
+          Logger().log('Updated button state: ${value != 0}');
         }
         else {
           // Unknown parameter ID
