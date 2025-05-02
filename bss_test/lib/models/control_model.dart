@@ -172,12 +172,41 @@ class ControlModel {
   // Helper method to get protocol address for this control
   String? getPrimaryAddress() {
     if (stateVariables.isEmpty) return null;
-    return stateVariables.first.hiQnetAddress;
+    String address = stateVariables.first.hiQnetAddress;
+    // Ensure address is properly formatted and lowercase for consistent comparisons
+    return address.toLowerCase();
   }
   
   // Helper method to get parameter ID for this control
   String? getPrimaryParameterId() {
     if (stateVariables.isEmpty) return null;
-    return stateVariables.first.parameterID;
+    String paramId = stateVariables.first.parameterID;
+    // Ensure parameter ID is properly formatted and lowercase for consistent comparisons
+    return paramId.toLowerCase();
+  }
+  
+  // Get all state variables for this control
+  List<StateVariableItem> getStateVariables() {
+    return stateVariables;
+  }
+  
+  // Check if control has a state variable
+  bool hasStateVariable() {
+    return stateVariables.isNotEmpty;
+  }
+  
+  // Get control properties
+  Map<String, dynamic> getProperties() {
+    return properties;
+  }
+  
+  // Check if control has specific property
+  bool hasProperty(String key) {
+    return properties.containsKey(key);
+  }
+  
+  // Get a specific property value
+  dynamic getProperty(String key, [dynamic defaultValue]) {
+    return properties[key] ?? defaultValue;
   }
 }

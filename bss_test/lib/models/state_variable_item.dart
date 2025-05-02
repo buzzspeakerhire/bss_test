@@ -39,6 +39,7 @@ class StateVariableItem {
 
   // Helper method to get a HiQnet address from the state variable
   String get hiQnetAddress {
+    // Format to match the exact format used in our test components (fixed-width format)
     return '0x${nodeID.toRadixString(16).padLeft(2, '0')}${vdIndex.toRadixString(16).padLeft(2, '0')}${objID.toRadixString(16).padLeft(6, '0')}';
   }
 

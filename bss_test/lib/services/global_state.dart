@@ -22,6 +22,16 @@ class GlobalState extends ChangeNotifier {
   final Map<String, double> _faderValues = {};
   final Map<String, bool> _buttonStates = {};
   
+  // Stream controllers for value changes
+  final _faderValueChangedController = StreamController<Map<String, dynamic>>.broadcast();
+  final _buttonStateChangedController = StreamController<Map<String, dynamic>>.broadcast();
+  final _connectionChangedController = StreamController<bool>.broadcast();
+  
+  // Stream getters
+  Stream<Map<String, dynamic>> get onFaderValueChanged => _faderValueChangedController.stream;
+  Stream<Map<String, dynamic>> get onButtonStateChanged => _buttonStateChangedController.stream;
+  Stream<bool> get onConnectionChanged => _connectionChangedController.stream;
+  
   // Connection state
   bool _isConnected = false;
   bool get isConnected => _isConnected;
@@ -47,6 +57,7 @@ class GlobalState extends ChangeNotifier {
       _isConnected = connected;
       debugPrint('GlobalState: Connection state changed to $_isConnected');
       notifyListeners();
+      _connectionChangedController.add(connected);
     });
     
     // Listen for fader updates
@@ -61,6 +72,13 @@ class GlobalState extends ChangeNotifier {
       
       debugPrint('GlobalState: Received fader update #$_updateCount for $key = $value');
       notifyListeners();
+      
+      // Also notify via stream
+      _faderValueChangedController.add({
+        'address': address,
+        'paramId': paramId,
+        'value': value
+      });
     });
     
     // Also listen for fader updates from FaderCommunication
@@ -75,6 +93,13 @@ class GlobalState extends ChangeNotifier {
       
       debugPrint('GlobalState: Received fader update from FaderComm #$_updateCount for $key = $value');
       notifyListeners();
+      
+      // Also notify via stream
+      _faderValueChangedController.add({
+        'address': address,
+        'paramId': paramId,
+        'value': value
+      });
     });
     
     // Listen for button updates
@@ -90,6 +115,13 @@ class GlobalState extends ChangeNotifier {
       
       debugPrint('GlobalState: Received button update #$_updateCount for $key = $state');
       notifyListeners();
+      
+      // Also notify via stream
+      _buttonStateChangedController.add({
+        'address': address,
+        'paramId': paramId,
+        'state': state
+      });
     });
     
     // Also listen for button updates from FaderCommunication
@@ -104,6 +136,13 @@ class GlobalState extends ChangeNotifier {
       
       debugPrint('GlobalState: Received button update from FaderComm #$_updateCount for $key = $state');
       notifyListeners();
+      
+      // Also notify via stream
+      _buttonStateChangedController.add({
+        'address': address,
+        'paramId': paramId,
+        'state': state
+      });
     });
     
     debugPrint('GlobalState: All listeners initialized');
@@ -131,6 +170,13 @@ class GlobalState extends ChangeNotifier {
     
     debugPrint('GlobalState: Set fader value for $key = $value');
     notifyListeners();
+    
+    // Also notify via stream
+    _faderValueChangedController.add({
+      'address': address,
+      'paramId': paramId,
+      'value': value
+    });
   }
   
   // Set button state - both updates local state and sends to device
@@ -143,6 +189,13 @@ class GlobalState extends ChangeNotifier {
     
     debugPrint('GlobalState: Set button state for $key = $state');
     notifyListeners();
+    
+    // Also notify via stream
+    _buttonStateChangedController.add({
+      'address': address,
+      'paramId': paramId,
+      'state': state
+    });
   }
   
   // Force manual update from device for testing
@@ -154,6 +207,9 @@ class GlobalState extends ChangeNotifier {
   @override
   void dispose() {
     _refreshTimer?.cancel();
+    _faderValueChangedController.close();
+    _buttonStateChangedController.close();
+    _connectionChangedController.close();
     super.dispose();
   }
 }

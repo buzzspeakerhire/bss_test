@@ -6,7 +6,8 @@ import 'panel_viewer.dart';
 import 'faders_only_panel_viewer.dart';
 import 'scalable_panel_viewer.dart';
 import 'fixed_faders_viewer.dart';
-import 'faders_and_source_panel_viewer.dart';  // Add the new import
+import 'faders_and_source_panel_viewer.dart';
+import 'xml_faders_panel.dart';  // Add the new import
 
 class PanelLoaderScreen extends StatefulWidget {
   const PanelLoaderScreen({super.key});
@@ -98,6 +99,17 @@ class _PanelLoaderScreenState extends State<PanelLoaderScreen> {
       ),
     );
   }
+  
+  // Add new function to view XML Faders Panel with two-way communication
+  void _viewXmlFadersPanel() {
+    if (_loadedPanel == null) return;
+    
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) => XmlFadersPanel(panel: _loadedPanel!),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -128,7 +140,17 @@ class _PanelLoaderScreenState extends State<PanelLoaderScreen> {
                     child: const Text('Optimized Faders'),
                   ),
                   const SizedBox(width: 10),
-                  // Add the new button with highlight
+                  // XML Faders Panel with working two-way communication
+                  ElevatedButton(
+                    onPressed: _viewXmlFadersPanel,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Theme.of(context).colorScheme.tertiaryContainer,
+                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                    ),
+                    child: const Text('XML Faders Only'),
+                  ),
+                  const SizedBox(width: 10),
+                  // Add the Faders & Sources button with highlight
                   ElevatedButton(
                     onPressed: _viewFadersAndSources,
                     style: ElevatedButton.styleFrom(
