@@ -1,4 +1,5 @@
-import '../utils/hex_utils.dart';
+// lib/services/bss_protocol_service.dart
+
 import '../utils/logger.dart';
 import 'dart:math';
 
@@ -31,6 +32,11 @@ class BssProtocolService {
   static const int BSS_MAX_VALUE = 100000;   // +10dB
   static const int BSS_UNITY_VALUE = 0;      // 0dB
   static const double BSS_UNITY_NORMALIZED = 0.7373; // Point where 0dB occurs on fader
+  
+  // New constants for hybrid mapping
+  static const double DB_10_NEGATIVE = -10.0; // -10dB boundary
+  static const int BSS_10DB_NEGATIVE_VALUE = -30100; // Estimated device value for -10dB
+  static const double NORMALIZED_10DB_NEGATIVE = 0.6; // Estimated normalized value for -10dB
   
   // Parse HiQnet address string to list of bytes
   List<int> parseHiQnetAddress(String addressHex) {
@@ -164,141 +170,130 @@ class BssProtocolService {
   int normalizedToFaderValue(double normalizedValue) {
     Logger().log('Converting normalized fader value: $normalizedValue');
     
-    int deviceValue;
+    double deviceValueDouble;
     
     // Handle edge cases
     if (normalizedValue <= 0.0) {
-      deviceValue = BSS_MIN_VALUE;  // Minimum (-80dB)
-      Logger().log('Minimum value detected, using -80dB: $deviceValue');
+      return BSS_MIN_VALUE;  // Minimum (-80dB)
     } 
     else if (normalizedValue >= 1.0) {
-      deviceValue = BSS_MAX_VALUE;  // Maximum (+10dB)
-      Logger().log('Maximum value detected, using +10dB: $deviceValue');
+      return BSS_MAX_VALUE;  // Maximum (+10dB)
     }
-    // Unity gain (0dB) point
     else if ((normalizedValue - BSS_UNITY_NORMALIZED).abs() < 0.001) {
-      deviceValue = BSS_UNITY_VALUE;  // Unity (0dB)
-      Logger().log('Unity gain point detected, using 0dB: $deviceValue');
-    }
-    // Below unity gain
-    else if (normalizedValue < BSS_UNITY_NORMALIZED) {
-      // BSS faders use a logarithmic curve below unity gain
-      // Linear interpolation of normalized values fails badly
-      // Instead convert to dB first, then to device value
-      
-      // Calculate dB value (log scale): 
-      // Map 0.0 -> -80dB, BSS_UNITY_NORMALIZED -> 0dB
-      double normalizedBelow = normalizedValue / BSS_UNITY_NORMALIZED;
-      
-      // Use a special corrected formula based on analysis of BSS protocol values
-      // This maps -80dB to MIN_VALUE and 0dB to UNITY_VALUE
-      double dbValue = -80.0 * (1.0 - normalizedBelow);
-      
-      // Convert dB to device value directly using BSS fixed-point integer representation
-      if (dbValue <= -60.0) {
-        // Special scaling for very low values to avoid going to -infinity
-        double attenFactor = (dbValue + 80.0) / 20.0;  // 0.0 to 1.0 range
-        deviceValue = (BSS_MIN_VALUE * (1.0 - attenFactor)).round();
-      } else {
-        // More precise scaling for higher values
-        // BSS uses a power of 10 calculation for dB
-        double gain = pow(10, dbValue / 20.0);
-        
-        // Scale gain to device units
-        deviceValue = ((gain - 1.0) * 100000).round();
-        
-        // For negative dB, device value is negative
-        if (dbValue < 0) {
-          // Apply additional scaling factor for better matching
-          deviceValue = (deviceValue * 1.015).round();
-        }
-      }
-      
-      Logger().log('Below unity calculation: $normalizedValue -> $normalizedBelow -> ${dbValue}dB -> $deviceValue');
-    }
-    // Above unity gain
-    else {
-      // Linear scaling from UNITY to MAX
-      double normalizedAbove = (normalizedValue - BSS_UNITY_NORMALIZED) / (1.0 - BSS_UNITY_NORMALIZED);
-      deviceValue = (BSS_UNITY_VALUE + (BSS_MAX_VALUE - BSS_UNITY_VALUE) * normalizedAbove).round();
-      
-      Logger().log('Above unity calculation: $normalizedValue -> $normalizedAbove -> $deviceValue');
+      return BSS_UNITY_VALUE;  // Unity (0dB)
     }
     
-    // Ensure value is in valid range
+    // Hybrid approach:
+    // 1. Logarithmic from -80dB to -10dB
+    // 2. Linear from -10dB to +10dB
+    if (normalizedValue <= NORMALIZED_10DB_NEGATIVE) {
+      // Logarithmic scaling for -80dB to -10dB
+      // Map 0.0 -> -80dB (BSS_MIN_VALUE), NORMALIZED_10DB_NEGATIVE -> -10dB (BSS_10DB_NEGATIVE_VALUE)
+      double normalizedInRange = normalizedValue / NORMALIZED_10DB_NEGATIVE; // 0-1 within this range
+      
+      // Convert to dB on logarithmic scale (exponential mapping)
+      double dbRange = 80.0 - 10.0; // Range from -80 to -10 = 70dB
+      double dbValue = -80.0 + (pow(normalizedInRange, 0.5) * dbRange); // Square root for log curve
+      
+      // Convert dB to device value
+      if (dbValue <= -60.0) {
+        // For very low values, use special scaling
+        double attenFactor = (dbValue + 80.0) / 70.0; // 0-1 range within the -80 to -10 range
+        deviceValueDouble = BSS_MIN_VALUE * (1.0 - attenFactor) + BSS_10DB_NEGATIVE_VALUE * attenFactor;
+      } else {
+        // For higher values, use more precise calculation
+        double fraction = (dbValue + 80.0) / 70.0; // 0-1 range 
+        deviceValueDouble = BSS_MIN_VALUE + fraction * (BSS_10DB_NEGATIVE_VALUE - BSS_MIN_VALUE);
+      }
+    } else {
+      // Linear scaling for -10dB to +10dB (above NORMALIZED_10DB_NEGATIVE)
+      double normalizedInRange = (normalizedValue - NORMALIZED_10DB_NEGATIVE) / 
+                                 (1.0 - NORMALIZED_10DB_NEGATIVE); // 0-1 within this range
+      
+      deviceValueDouble = BSS_10DB_NEGATIVE_VALUE + 
+                        normalizedInRange * (BSS_MAX_VALUE - BSS_10DB_NEGATIVE_VALUE);
+    }
+    
+    // Round to integer and apply range limits
+    int deviceValue = deviceValueDouble.round();
     deviceValue = deviceValue.clamp(BSS_MIN_VALUE, BSS_MAX_VALUE);
     
-    Logger().log('Final calculated device value: $deviceValue');
+    Logger().log('Hybrid mapping calculated device value: $deviceValue');
     return deviceValue;
   }
   
   // Convert device value to normalized value (0.0 to 1.0) for faders
   double faderValueToNormalized(int deviceValue) {
-    // Handle unsigned/signed conversion
-    double signedValue = deviceValue.toDouble();
-    bool isUnsigned = false;
+    // Enhanced logging for debugging
+    Logger().log('=== FADER VALUE CONVERSION DEBUG ===');
+    Logger().log('RAW PROCESSOR VALUE: $deviceValue (decimal)');
+    Logger().log('RAW PROCESSOR VALUE: 0x${deviceValue.toRadixString(16).toUpperCase()} (hex)');
     
-    if ((deviceValue & 0x80000000) != 0) {
+    // Handle signed values
+    double signedValue = deviceValue.toDouble();
+    if (deviceValue > 0x7FFFFFFF) {
       signedValue = deviceValue - 0x100000000;
-      isUnsigned = true;
-      Logger().log('Device fader value to convert: $deviceValue (0x${deviceValue.toRadixString(16).toUpperCase()})');
-      Logger().log('Converted unsigned value to signed: $signedValue');
+      Logger().log('CONVERTED TO SIGNED: $signedValue (from unsigned value)');
     } else {
-      Logger().log('Device fader value to convert: $deviceValue (0x${deviceValue.toRadixString(16).toUpperCase()})');
+      Logger().log('VALUE IS ALREADY SIGNED: $signedValue');
     }
     
     double normalizedValue;
     
+    // Hybrid approach:
+    // 1. Logarithmic from -80dB to -10dB
+    // 2. Linear from -10dB to +10dB
+    
     // Handle edge cases
     if (signedValue <= BSS_MIN_VALUE) {
       normalizedValue = 0.0;
-      Logger().log('Minimum value detected, using normalized 0.0');
-    }
+    } 
     else if (signedValue >= BSS_MAX_VALUE) {
       normalizedValue = 1.0;
-      Logger().log('Maximum value detected, using normalized 1.0');
     }
-    // Unity gain (0dB) exact point
     else if (signedValue == BSS_UNITY_VALUE) {
       normalizedValue = BSS_UNITY_NORMALIZED;
-      Logger().log('Unity gain value detected, using exact normalized value: $normalizedValue');
     }
-    // Below unity gain (negative values in BSS)
-    else if (signedValue < BSS_UNITY_VALUE) {
-      // Convert to dB scale first
-      // For values close to minimum, special handling to avoid extreme values
-      if (signedValue <= -250000) {
-        // Near minimum, use linear scaling for the tail end
-        double fraction = (signedValue - BSS_MIN_VALUE) / (-250000 - BSS_MIN_VALUE);
-        normalizedValue = fraction * 0.1; // Scale to 0.0-0.1 range
-      } else {
-        // Convert to dB and use logarithmic mapping
-        // This is the approximate inverse of the sending formula
-        
-        // Calculate dB attenuation from device value
-        // Map device value to dB, then to normalized value
-        double fraction = (signedValue - BSS_MIN_VALUE) / (BSS_UNITY_VALUE - BSS_MIN_VALUE);
-        double dbValue = -80.0 * (1.0 - fraction);
-        
-        // Map dB value to normalized range
-        normalizedValue = (dbValue + 80.0) / 80.0 * BSS_UNITY_NORMALIZED;
-      }
-      
-      Logger().log('Below unity calculation: $signedValue -> $normalizedValue');
+    // Below -10dB (logarithmic range)
+    else if (signedValue <= BSS_10DB_NEGATIVE_VALUE) {
+      // Logarithmic scaling
+      double fraction = (signedValue - BSS_MIN_VALUE) / (BSS_10DB_NEGATIVE_VALUE - BSS_MIN_VALUE);
+      fraction = pow(fraction, 2.0).toDouble(); // Square for log curve (inverse of square root)
+      normalizedValue = fraction * NORMALIZED_10DB_NEGATIVE;
     }
-    // Above unity gain (positive values in BSS)
+    // Above -10dB (linear range)
     else {
-      // Linear scaling for above unity
-      double fraction = (signedValue - BSS_UNITY_VALUE) / (BSS_MAX_VALUE - BSS_UNITY_VALUE);
-      normalizedValue = BSS_UNITY_NORMALIZED + (1.0 - BSS_UNITY_NORMALIZED) * fraction;
-      
-      Logger().log('Above unity calculation: $signedValue -> $fraction -> $normalizedValue');
+      // Linear scaling
+      double fraction = (signedValue - BSS_10DB_NEGATIVE_VALUE) / 
+                       (BSS_MAX_VALUE - BSS_10DB_NEGATIVE_VALUE);
+      normalizedValue = NORMALIZED_10DB_NEGATIVE + fraction * (1.0 - NORMALIZED_10DB_NEGATIVE);
     }
     
     // Ensure value is within valid range
     normalizedValue = normalizedValue.clamp(0.0, 1.0);
     
-    Logger().log('Final normalized value: ${normalizedValue.toStringAsFixed(4)}');
+    // Calculate approximate dB for logging
+    double dbValue;
+    if (signedValue >= 0) {
+      dbValue = (signedValue / BSS_MAX_VALUE.toDouble()) * 10.0; // 0 to +10dB
+      Logger().log('ESTIMATED dB VALUE: +${dbValue.toStringAsFixed(1)}dB');
+    } else if (signedValue >= BSS_10DB_NEGATIVE_VALUE) {
+      // Linear range from -10dB to 0dB
+      double fraction = (signedValue - BSS_10DB_NEGATIVE_VALUE) / (BSS_UNITY_VALUE - BSS_10DB_NEGATIVE_VALUE);
+      dbValue = -10.0 + fraction * 10.0;
+      Logger().log('ESTIMATED dB VALUE: ${dbValue.toStringAsFixed(1)}dB (linear range)');
+    } else {
+      // Logarithmic range from -80dB to -10dB
+      double fraction = (signedValue - BSS_MIN_VALUE) / (BSS_10DB_NEGATIVE_VALUE - BSS_MIN_VALUE);
+      dbValue = -80.0 + fraction * 70.0; // 70dB range
+      Logger().log('ESTIMATED dB VALUE: ${dbValue.toStringAsFixed(1)}dB (logarithmic range)');
+    }
+    
+    Logger().log('HYBRID MAPPING: value=$signedValue');
+    Logger().log('FINAL NORMALIZED VALUE: ${normalizedValue.toStringAsFixed(6)}');
+    Logger().log('FINAL PERCENT VALUE: ${(normalizedValue * 100).toStringAsFixed(2)}%');
+    Logger().log('=== END FADER CONVERSION DEBUG ===');
+    
     return normalizedValue;
   }
 }
