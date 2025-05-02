@@ -202,7 +202,7 @@ class BssProtocolService {
       } else {
         // More precise scaling for higher values
         // BSS uses a power of 10 calculation for dB
-        double gain = pow(10, dbValue / 20.0).toDouble();
+        double gain = pow(10, dbValue / 20.0);
         
         // Scale gain to device units
         deviceValue = ((gain - 1.0) * 100000).round();
