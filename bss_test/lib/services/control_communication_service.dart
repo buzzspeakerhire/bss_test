@@ -137,6 +137,15 @@ class ControlCommunicationService {
         }
       });
       
+      // Add a temporary direct listener to check communication
+      _faderComm.addFaderUpdateListener((data) {
+        Logger().log('Direct fader update listener received: ${data.toString()}');
+      });
+      
+      _faderComm.addButtonUpdateListener((data) {
+        Logger().log('Direct button update listener received: ${data.toString()}');
+      });
+      
       // Forward fader updates to the FaderCommunication service
       onFaderUpdate.listen((data) {
         try {
@@ -209,6 +218,9 @@ class ControlCommunicationService {
       
       if (success) {
         Logger().log('Set fader command sent successfully');
+        
+        // Also update local state through fader communication
+        _faderComm.updateFaderFromDevice(addressHex, paramIdHex, normalizedValue);
       } else {
         Logger().log('Failed to send fader command');
       }
@@ -216,6 +228,30 @@ class ControlCommunicationService {
       return success;
     } catch (e) {
       Logger().log('Error setting fader value: $e');
+      return false;
+    }
+  }
+  
+  // Subscribe to fader value
+  Future<bool> subscribeFaderValue(String addressHex, String paramIdHex) async {
+    try {
+      final address = _bssProtocolService.parseHiQnetAddress(addressHex);
+      final paramId = int.parse(paramIdHex.replaceAll("0x", ""), radix: 16);
+      
+      Logger().log('Subscribing to fader value: $addressHex, $paramIdHex');
+      
+      final command = _bssProtocolService.generateSubscribeCommand(address, paramId);
+      final success = await _connectionService.sendData(command);
+      
+      if (success) {
+        Logger().log('Subscribe fader command sent successfully');
+      } else {
+        Logger().log('Failed to send subscribe fader command');
+      }
+      
+      return success;
+    } catch (e) {
+      Logger().log('Error subscribing to fader value: $e');
       return false;
     }
   }
@@ -234,6 +270,9 @@ class ControlCommunicationService {
       
       if (success) {
         Logger().log('Set button command sent successfully');
+        
+        // Also update local state through fader communication
+        _faderComm.updateButtonFromDevice(addressHex, paramIdHex, state);
       } else {
         Logger().log('Failed to send button command');
       }
@@ -475,8 +514,15 @@ class ControlCommunicationService {
             Logger().log('Updated source selection: $value');
           } else {
             // This is likely a fader
-            final normalizedValue = _bssProtocolService.faderValueToNormalized(value);
-            Logger().log('Processing fader update with raw value: $value, normalized: ${normalizedValue.toStringAsFixed(3)}');
+            // Use normalizedValue if available, otherwise calculate it
+            double normalizedValue;
+            if (message['normalizedValue'] != null) {
+              normalizedValue = message['normalizedValue'];
+              Logger().log('Using provided normalized value: ${normalizedValue.toStringAsFixed(3)}');
+            } else {
+              normalizedValue = _bssProtocolService.faderValueToNormalized(value);
+              Logger().log('Calculated normalized value: ${normalizedValue.toStringAsFixed(3)}');
+            }
             
             // Send update to fader stream
             _safeAddToStream(_faderUpdateController, {
@@ -485,6 +531,10 @@ class ControlCommunicationService {
               'value': normalizedValue,
               'raw': value
             });
+            
+            // Also directly update via FaderCommunication
+            _faderComm.updateFaderFromDevice(addressHex, paramIdHex, normalizedValue);
+            
             Logger().log('Updated fader value: ${normalizedValue.toStringAsFixed(3)}');
           }
         } 
@@ -492,14 +542,22 @@ class ControlCommunicationService {
           // This is likely a button
           Logger().log('Processing button update with value: $value');
           
+          // Get boolean state from message if available
+          bool buttonState = message['booleanState'] != null ? message['booleanState'] : (value != 0);
+          
           // Send update to button stream
           _safeAddToStream(_buttonUpdateController, {
             'address': addressHex,
             'paramId': paramIdHex,
             'value': value, // Button state (0 or 1)
+            'state': buttonState,
             'raw': value
           });
-          Logger().log('Updated button state: ${value != 0}');
+          
+          // Also directly update via FaderCommunication
+          _faderComm.updateButtonFromDevice(addressHex, paramIdHex, buttonState);
+          
+          Logger().log('Updated button state: $buttonState');
         }
         else {
           // Unknown parameter ID

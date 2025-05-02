@@ -144,7 +144,8 @@ class BssProtocolService {
   
   // Convert dB value to normalized range for meter display (0.0 to 1.0)
   double dbToNormalizedValue(double dbValue, {double minDb = -80.0, double maxDb = 40.0}) {
-    return (dbValue - minDb) / (maxDb - minDb);
+    final normalizedValue = (dbValue - minDb) / (maxDb - minDb);
+    return normalizedValue.clamp(0.0, 1.0);
   }
   
   // Convert normalized value (0.0 to 1.0) to dB for meter display
@@ -154,24 +155,54 @@ class BssProtocolService {
   
   // Convert normalized value (0.0 to 1.0) to device value for faders
   int normalizedToFaderValue(double normalizedValue) {
+    // Debug - track values for troubleshooting
+    Logger().log('Normalized fader value to convert: $normalizedValue');
+    
     // Max value = 0x0186A0 (100000), Min value = 0xFFFBB7D7 (-280617)
-    final double maxValue = 0x0186A0.toDouble();
+    final double maxValue = 0x0186A0.toDouble(); // 100000
     final double minValue = -280617.0; // 0xFFFBB7D7 as signed integer
-    return (minValue + normalizedValue * (maxValue - minValue)).toInt();
+    
+    // Calculate raw value
+    int rawValue = (minValue + normalizedValue * (maxValue - minValue)).round();
+    
+    // Log the calculated value for debugging
+    Logger().log('Calculated fader device value: $rawValue');
+    
+    // Handle signed/unsigned conversion for protocol
+    if (rawValue < 0) {
+      // If value is negative, convert to 32-bit twos complement
+      rawValue = 0xFFFFFFFF + rawValue + 1;
+      
+      // Log adjusted negative value
+      Logger().log('Adjusted negative value as 32-bit unsigned: $rawValue (0x${rawValue.toRadixString(16).toUpperCase()})');
+    }
+    
+    return rawValue;
   }
   
   // Convert device value to normalized value (0.0 to 1.0) for faders
   double faderValueToNormalized(int deviceValue) {
+    // Debug output for incoming value
+    Logger().log('Device fader value to convert: $deviceValue (0x${deviceValue.toRadixString(16).toUpperCase()})');
+    
     final double maxValue = 0x0186A0.toDouble(); // 100000
     final double minValue = -280617.0; // 0xFFFBB7D7 as signed integer
     
     // Handle signed values
     double signedValue = deviceValue.toDouble();
-    if (deviceValue > 0x7FFFFFFF) {
-      signedValue = -(0x100000000 - deviceValue).toDouble();
+    if ((deviceValue & 0x80000000) != 0) {
+      // Convert from unsigned 32-bit to signed
+      signedValue = deviceValue - 0x100000000;
+      Logger().log('Converted unsigned value to signed: $signedValue');
     }
     
+    // Calculate normalized value
     double normalizedValue = (signedValue - minValue) / (maxValue - minValue);
-    return normalizedValue.clamp(0.0, 1.0);
+    normalizedValue = normalizedValue.clamp(0.0, 1.0);
+    
+    // Log result for debugging
+    Logger().log('Converted to normalized value: ${normalizedValue.toStringAsFixed(4)}');
+    
+    return normalizedValue;
   }
 }

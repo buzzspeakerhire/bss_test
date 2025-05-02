@@ -33,6 +33,12 @@ class MessageProcessorService {
     
     // Use direct processing for more reliable operation
     _useDirectProcessing = true;
+    
+    // Add a debug listener to ensure the stream has at least one listener
+    onProcessedMessage.listen((message) {
+      debugPrint('Debug listener received message: ${message['type']}');
+    });
+    
     return;
   }
   
@@ -74,6 +80,13 @@ class MessageProcessorService {
       // Log the hex representation of the message
       String hexMessage = message.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
       debugPrint('Processing message: $hexMessage');
+      
+      // Check if this is an ACK/NAK message (simple response)
+      if (message.length == 3 && message[1] == 0x06) {
+        return {'type': 'ACK'};
+      } else if (message.length == 3 && message[1] == 0x15) {
+        return {'type': 'NAK'};
+      }
       
       // Extract the body (between start and end bytes)
       List<int> body = message.sublist(1, message.length - 1);
@@ -135,6 +148,8 @@ class MessageProcessorService {
       }
       
       int msgType = unsubstitutedBody[0];
+      
+      // Properly handle all message types
       if (msgType == 0x88) { // SET message
         // Extract address, paramId, and value
         if (unsubstitutedBody.length < 13) {
@@ -144,14 +159,74 @@ class MessageProcessorService {
         
         List<int> address = unsubstitutedBody.sublist(1, 7); // 6 bytes address
         int paramId = (unsubstitutedBody[7] << 8) | unsubstitutedBody[8];
-        int value = (unsubstitutedBody[9] << 24) | 
-                   (unsubstitutedBody[10] << 16) | 
-                   (unsubstitutedBody[11] << 8) | 
-                    unsubstitutedBody[12];
+        
+        // Handle signed 32-bit integers correctly
+        int value = 0;
+        // MSB first (big endian)
+        value = (unsubstitutedBody[9] << 24) | 
+               (unsubstitutedBody[10] << 16) | 
+               (unsubstitutedBody[11] << 8) | 
+                unsubstitutedBody[12];
+        
+        // Convert to signed if needed (handle two's complement)
+        if ((value & 0x80000000) != 0) {
+          value = value - 0x100000000;
+        }
         
         // Debug output for SET message
         String addressHex = address.map((b) => b.toRadixString(16).padLeft(2, '0')).join('');
         debugPrint('SET message - address: 0x$addressHex, paramId: 0x${paramId.toRadixString(16)}, value: $value');
+        
+        // IMPORTANT: Special handling for different parameter types
+        if (paramId == 1) {
+          // This is a button parameter
+          debugPrint('Button message detected, raw value: $value');
+          
+          return {
+            'type': 'SET',
+            'address': address,
+            'paramId': paramId,
+            'value': value, // 0 = false, anything else = true
+            'booleanState': value != 0  // Add explicitly for button handling
+          };
+        } else if (paramId == 0) {
+          // This is likely a fader parameter (or source selector)
+          // Determine which one based on address
+          String addressHexLower = addressHex.toLowerCase();
+          
+          if (addressHexLower.contains("0200")) {
+            // This is a meter
+            debugPrint('Meter message detected, raw value: $value');
+          } else if (addressHexLower.contains("0300")) {
+            // This is a source selector
+            debugPrint('Source selector message detected, raw value: $value');
+          } else {
+            // This is probably a fader
+            debugPrint('Fader message detected, raw value: $value');
+            
+            // Calculate normalized value (0.0 to 1.0)
+            double normalizedValue = 0.5; // Default value
+            
+            // Do this calculation based on BSS protocol
+            // Max value = 0x0186A0 (100000), Min value = 0xFFFBB7D7 (-280617)
+            final double maxValue = 0x0186A0.toDouble(); // 100000
+            final double minValue = -280617.0;           // 0xFFFBB7D7 as signed integer
+            
+            // Calculate normalized value
+            normalizedValue = (value - minValue) / (maxValue - minValue);
+            normalizedValue = normalizedValue.clamp(0.0, 1.0);
+            
+            debugPrint('Fader normalized value: ${normalizedValue.toStringAsFixed(3)}');
+            
+            return {
+              'type': 'SET',
+              'address': address,
+              'paramId': paramId,
+              'value': value,
+              'normalizedValue': normalizedValue  // Add explicitly for fader handling
+            };
+          }
+        }
         
         return {
           'type': 'SET',
@@ -168,10 +243,19 @@ class MessageProcessorService {
         
         List<int> address = unsubstitutedBody.sublist(1, 7);
         int paramId = (unsubstitutedBody[7] << 8) | unsubstitutedBody[8];
-        int value = (unsubstitutedBody[9] << 24) | 
-                   (unsubstitutedBody[10] << 16) | 
-                   (unsubstitutedBody[11] << 8) | 
-                    unsubstitutedBody[12];
+        
+        // Handle signed 32-bit integers correctly
+        int value = 0;
+        // MSB first (big endian)
+        value = (unsubstitutedBody[9] << 24) | 
+               (unsubstitutedBody[10] << 16) | 
+               (unsubstitutedBody[11] << 8) | 
+                unsubstitutedBody[12];
+        
+        // Convert to signed if needed (handle two's complement)
+        if ((value & 0x80000000) != 0) {
+          value = value - 0x100000000;
+        }
         
         // Debug output for SET_PERCENT message
         String addressHex = address.map((b) => b.toRadixString(16).padLeft(2, '0')).join('');
@@ -189,10 +273,16 @@ class MessageProcessorService {
       } else if (msgType == 0x15) { // NAK
         debugPrint('NAK message received');
         return {'type': 'NAK'};
+      } else if (msgType == 0x89 || msgType == 0x8A) { // SUBSCRIBE or UNSUBSCRIBE
+        debugPrint('Subscribe/Unsubscribe message received');
+        return {
+          'type': msgType == 0x89 ? 'SUBSCRIBE' : 'UNSUBSCRIBE',
+          'raw': unsubstitutedBody
+        };
       }
       
       debugPrint('Unknown message type: ${msgType.toRadixString(16)}');
-      return {'type': 'UNKNOWN', 'msgType': msgType};
+      return {'type': 'UNKNOWN', 'msgType': msgType, 'raw': unsubstitutedBody};
     } catch (e) {
       debugPrint('Error processing message: $e');
       return {'error': 'Processing error', 'message': e.toString()};

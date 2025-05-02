@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
+import 'dart:async';
 import '../../services/control_communication_service.dart';
+import '../../services/fader_communication.dart';
+import '../../services/bss_protocol_service.dart';
 
 class FaderPanel extends StatefulWidget {
   final bool isConnected;
@@ -15,33 +18,112 @@ class FaderPanel extends StatefulWidget {
 
 class _FaderPanelState extends State<FaderPanel> {
   final _controlService = ControlCommunicationService();
+  final _faderComm = FaderCommunication();
+  final _bssProtocol = BssProtocolService();
   
   // Text controllers
   final _faderHiQnetAddressController = TextEditingController(text: "0x2D6803000100");
   final _faderParamIdController = TextEditingController(text: "0x0");
   
   // Control values
-  double _faderValue = 1.0; // 0.0 (min) to 1.0 (max)
+  double _faderValue = 0.5; // 0.0 (min) to 1.0 (max)
+  
+  // Track subscriptions
+  StreamSubscription? _faderUpdateSubscription;
+  StreamSubscription? _faderCommSubscription;
+  Timer? _debugTimer;
   
   @override
   void initState() {
     super.initState();
     
-    // Listen for fader updates
-    _controlService.onFaderUpdate.listen((data) {
+    // Register with control service
+    _controlService.setFaderAddressControllers(_faderHiQnetAddressController, _faderParamIdController);
+    
+    // Listen for fader updates from control service
+    _faderUpdateSubscription = _controlService.onFaderUpdate.listen((data) {
       final address = _faderHiQnetAddressController.text;
       final paramId = _faderParamIdController.text;
       
-      if (data['address'] == address && data['paramId'] == paramId) {
+      if (data['address'].toString().toLowerCase() == address.toLowerCase() && 
+          data['paramId'].toString().toLowerCase() == paramId.toLowerCase()) {
         setState(() {
           _faderValue = data['value'];
+          debugPrint('FaderPanel: Updated from control service: ${_faderValue.toStringAsFixed(3)}');
         });
       }
     });
+    
+    // Also listen for updates from FaderCommunication
+    _faderCommSubscription = _faderComm.onFaderUpdate.listen((data) {
+      final address = _faderHiQnetAddressController.text;
+      final paramId = _faderParamIdController.text;
+      
+      if (data['address'].toString().toLowerCase() == address.toLowerCase() && 
+          data['paramId'].toString().toLowerCase() == paramId.toLowerCase()) {
+        setState(() {
+          _faderValue = data['value'];
+          debugPrint('FaderPanel: Updated from FaderComm: ${_faderValue.toStringAsFixed(3)}');
+        });
+      }
+    });
+    
+    // Add a direct listener for further reliability
+    _faderComm.addFaderUpdateListener((data) {
+      final address = _faderHiQnetAddressController.text;
+      final paramId = _faderParamIdController.text;
+      
+      if (data['address'].toString().toLowerCase() == address.toLowerCase() && 
+          data['paramId'].toString().toLowerCase() == paramId.toLowerCase()) {
+        setState(() {
+          _faderValue = data['value'];
+          debugPrint('FaderPanel: Updated from direct listener: ${_faderValue.toStringAsFixed(3)}');
+        });
+      }
+    });
+    
+    // Start debug timer to help diagnose update issues
+    _debugTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      if (widget.isConnected) {
+        debugPrint('FaderPanel: Debug timer - current value: ${_faderValue.toStringAsFixed(3)}');
+      }
+    });
+    
+    // Request current fader value if connected
+    if (widget.isConnected) {
+      _requestFaderValue();
+    }
+  }
+  
+  @override
+  void didUpdateWidget(FaderPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    
+    // React to connection state changes
+    if (widget.isConnected != oldWidget.isConnected && widget.isConnected) {
+      // Connection just became active, request current state
+      _requestFaderValue();
+    }
+  }
+  
+  // Request current fader value from device
+  void _requestFaderValue() {
+    if (widget.isConnected) {
+      // Send a subscribe message to get current value
+      debugPrint('FaderPanel: Requesting current fader value');
+      
+      final address = _faderHiQnetAddressController.text;
+      final paramId = _faderParamIdController.text;
+      
+      _controlService.subscribeFaderValue(address, paramId);
+    }
   }
   
   @override
   void dispose() {
+    _faderUpdateSubscription?.cancel();
+    _faderCommSubscription?.cancel();
+    _debugTimer?.cancel();
     _faderHiQnetAddressController.dispose();
     _faderParamIdController.dispose();
     super.dispose();
@@ -52,15 +134,29 @@ class _FaderPanelState extends State<FaderPanel> {
     setState(() {
       _faderValue = value;
     });
+    
+    if (widget.isConnected) {
+      _sendFaderValue();
+    }
   }
   
   // Send updated fader value to device
   void _sendFaderValue() {
     if (widget.isConnected) {
+      debugPrint('FaderPanel: Sending fader value: ${_faderValue.toStringAsFixed(3)}');
+      
+      // Use both communication channels for reliability
       _controlService.setFaderValue(
         _faderHiQnetAddressController.text,
         _faderParamIdController.text,
         _faderValue,
+      );
+      
+      // Also directly report to FaderCommunication
+      _faderComm.reportFaderMoved(
+        _faderHiQnetAddressController.text,
+        _faderParamIdController.text, 
+        _faderValue
       );
     }
   }
@@ -116,6 +212,12 @@ class _FaderPanelState extends State<FaderPanel> {
                 SizedBox(
                   width: 60,
                   child: Text('${(_faderValue * 100).toInt()}%'),
+                ),
+                // Add a refresh button like we did for the button control
+                IconButton(
+                  icon: const Icon(Icons.refresh),
+                  onPressed: _requestFaderValue,
+                  tooltip: 'Force refresh',
                 ),
               ],
             ),

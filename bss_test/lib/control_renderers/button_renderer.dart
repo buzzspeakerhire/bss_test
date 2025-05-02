@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import '../models/control_model.dart';
 import '../services/global_state.dart';
+import '../services/fader_communication.dart';
+import 'dart:async';
 
 class ButtonRenderer extends StatefulWidget {
   final ControlModel control;
@@ -16,7 +18,11 @@ class ButtonRenderer extends StatefulWidget {
 
 class _ButtonRendererState extends State<ButtonRenderer> {
   final _globalState = GlobalState();
+  final _faderComm = FaderCommunication();
   bool _localIsPressed = false;
+  
+  // Track subscriptions
+  late StreamSubscription? _buttonUpdateSubscription;
 
   @override
   void initState() {
@@ -36,10 +42,38 @@ class _ButtonRendererState extends State<ButtonRenderer> {
       // Set initial local state
       _localIsPressed = _globalState.getButtonState(address, paramId);
       
+      // Subscribe to updates from FaderCommunication
+      _buttonUpdateSubscription = _faderComm.onButtonUpdate.listen((data) {
+        if (data['address'].toString().toLowerCase() == address.toLowerCase() && 
+            data['paramId'].toString().toLowerCase() == paramId.toLowerCase()) {
+          setState(() {
+            _localIsPressed = data['state'] as bool;
+            debugPrint('ButtonRenderer: Updated from FaderComm: $_localIsPressed');
+          });
+        }
+      });
+      
+      // Also directly register a listener
+      _faderComm.addButtonUpdateListener((data) {
+        if (data['address'].toString().toLowerCase() == address.toLowerCase() && 
+            data['paramId'].toString().toLowerCase() == paramId.toLowerCase()) {
+          setState(() {
+            _localIsPressed = data['state'] as bool;
+            debugPrint('ButtonRenderer: Updated from direct listener: $_localIsPressed');
+          });
+        }
+      });
+      
       debugPrint('ButtonRenderer: ${widget.control.name} initialized, initial state: $_localIsPressed');
     } catch (e) {
       debugPrint('Error in ButtonRenderer initState: $e');
     }
+  }
+  
+  @override
+  void dispose() {
+    _buttonUpdateSubscription?.cancel();
+    super.dispose();
   }
 
   @override
@@ -115,6 +149,10 @@ class _ButtonRendererState extends State<ButtonRenderer> {
       if (_globalState.isConnected) {
         // Send button state to the global state
         _globalState.setButtonState(address, paramId, pressed);
+        
+        // Also directly report through FaderCommunication
+        _faderComm.reportButtonStateChanged(address, paramId, pressed);
+        
         debugPrint('ButtonRenderer: Button ${widget.control.name} state changed to $pressed');
       }
     } catch (e) {

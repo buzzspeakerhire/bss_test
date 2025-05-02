@@ -143,6 +143,19 @@ class FaderCommunication {
       // Notify using both systems
       _safeAddToStream(_faderUpdateController, data);
       _notifyFaderUpdateListeners(data);
+      
+      // Force addition of a temporary listener if none exist
+      if (!_faderUpdateController.hasListener && _faderUpdateListeners.isEmpty) {
+        debugPrint('FaderCommunication: Adding temporary listener to prevent event loss');
+        final subscription = _faderUpdateController.stream.listen((data) {
+          debugPrint('FaderCommunication: Temporary listener received: $data');
+        });
+        
+        // Cancel after a short delay
+        Future.delayed(Duration(milliseconds: 100), () {
+          subscription.cancel();
+        });
+      }
     } catch (e) {
       debugPrint('Error updating fader from device: $e');
     }
@@ -182,6 +195,19 @@ class FaderCommunication {
       // Notify using both systems
       _safeAddToStream(_buttonUpdateController, data);
       _notifyButtonUpdateListeners(data);
+      
+      // Force addition of a temporary listener if none exist
+      if (!_buttonUpdateController.hasListener && _buttonUpdateListeners.isEmpty) {
+        debugPrint('FaderCommunication: Adding temporary listener to prevent event loss');
+        final subscription = _buttonUpdateController.stream.listen((data) {
+          debugPrint('FaderCommunication: Temporary listener received: $data');
+        });
+        
+        // Cancel after a short delay
+        Future.delayed(Duration(milliseconds: 100), () {
+          subscription.cancel();
+        });
+      }
     } catch (e) {
       debugPrint('Error updating button from device: $e');
     }

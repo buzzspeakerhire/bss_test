@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import '../models/control_model.dart';
 import '../services/global_state.dart';
+import '../services/fader_communication.dart';
+import 'dart:async'; // Added this import for StreamSubscription
 
 class BareFaderRenderer extends StatefulWidget {
   final ControlModel control;
@@ -16,8 +18,12 @@ class BareFaderRenderer extends StatefulWidget {
 
 class _BareFaderRendererState extends State<BareFaderRenderer> {
   final _globalState = GlobalState();
+  final _faderComm = FaderCommunication();
   bool _isDragging = false;
   double _localValue = 0.5;
+  
+  // Track subscriptions
+  StreamSubscription? _faderUpdateSubscription;
 
   @override
   void initState() {
@@ -37,10 +43,42 @@ class _BareFaderRendererState extends State<BareFaderRenderer> {
       // Set initial local value
       _localValue = _globalState.getFaderValue(address, paramId);
       
+      // Subscribe to updates from FaderCommunication
+      _faderUpdateSubscription = _faderComm.onFaderUpdate.listen((data) {
+        if (data['address'].toString().toLowerCase() == address.toLowerCase() && 
+            data['paramId'].toString().toLowerCase() == paramId.toLowerCase()) {
+          setState(() {
+            if (!_isDragging) {
+              _localValue = data['value'];
+              debugPrint('BareFaderRenderer: Updated from FaderComm: ${_localValue.toStringAsFixed(3)}');
+            }
+          });
+        }
+      });
+      
+      // Also directly register a listener
+      _faderComm.addFaderUpdateListener((data) {
+        if (data['address'].toString().toLowerCase() == address.toLowerCase() && 
+            data['paramId'].toString().toLowerCase() == paramId.toLowerCase()) {
+          setState(() {
+            if (!_isDragging) {
+              _localValue = data['value'];
+              debugPrint('BareFaderRenderer: Updated from direct listener: ${_localValue.toStringAsFixed(3)}');
+            }
+          });
+        }
+      });
+      
       debugPrint('BareFaderRenderer: ${widget.control.name} initialized, initial value: ${_localValue.toStringAsFixed(3)}');
     } catch (e) {
       debugPrint('Error in BareFaderRenderer initState: $e');
     }
+  }
+  
+  @override
+  void dispose() {
+    _faderUpdateSubscription?.cancel();
+    super.dispose();
   }
 
   @override
@@ -124,6 +162,10 @@ class _BareFaderRendererState extends State<BareFaderRenderer> {
     try {
       if (_globalState.isConnected) {
         _globalState.setFaderValue(address, paramId, value);
+        
+        // Also directly report through FaderCommunication
+        _faderComm.reportFaderMoved(address, paramId, value);
+        
         debugPrint('BareFaderRenderer: Fader ${widget.control.name} moved - value: ${value.toStringAsFixed(3)}');
       }
     } catch (e) {

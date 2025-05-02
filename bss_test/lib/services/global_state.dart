@@ -3,6 +3,7 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
 import 'control_communication_service.dart';
+import 'fader_communication.dart';
 
 // Simple global state manager for control values
 class GlobalState extends ChangeNotifier {
@@ -10,8 +11,9 @@ class GlobalState extends ChangeNotifier {
   static final GlobalState _instance = GlobalState._internal();
   factory GlobalState() => _instance;
   
-  // Communication service
+  // Services
   final _controlService = ControlCommunicationService();
+  final _faderComm = FaderCommunication();
   
   // Timer for periodic UI refresh
   Timer? _refreshTimer;
@@ -41,7 +43,7 @@ class GlobalState extends ChangeNotifier {
   // Initialize listeners
   void _initializeListeners() {
     // Listen for connection state changes
-    _controlService.onConnectionStatusChanged.listen((connected) {
+    _faderComm.onConnectionChanged.listen((connected) {
       _isConnected = connected;
       debugPrint('GlobalState: Connection state changed to $_isConnected');
       notifyListeners();
@@ -61,6 +63,20 @@ class GlobalState extends ChangeNotifier {
       notifyListeners();
     });
     
+    // Also listen for fader updates from FaderCommunication
+    _faderComm.onFaderUpdate.listen((data) {
+      _updateCount++;
+      final address = data['address'] as String;
+      final paramId = data['paramId'] as String;
+      final value = data['value'] as double;
+      
+      final key = '${address.toLowerCase()}:${paramId.toLowerCase()}';
+      _faderValues[key] = value;
+      
+      debugPrint('GlobalState: Received fader update from FaderComm #$_updateCount for $key = $value');
+      notifyListeners();
+    });
+    
     // Listen for button updates
     _controlService.onButtonUpdate.listen((data) {
       _updateCount++;
@@ -73,6 +89,20 @@ class GlobalState extends ChangeNotifier {
       _buttonStates[key] = state;
       
       debugPrint('GlobalState: Received button update #$_updateCount for $key = $state');
+      notifyListeners();
+    });
+    
+    // Also listen for button updates from FaderCommunication
+    _faderComm.onButtonUpdate.listen((data) {
+      _updateCount++;
+      final address = data['address'] as String;
+      final paramId = data['paramId'] as String;
+      final state = data['state'] as bool;
+      
+      final key = '${address.toLowerCase()}:${paramId.toLowerCase()}';
+      _buttonStates[key] = state;
+      
+      debugPrint('GlobalState: Received button update from FaderComm #$_updateCount for $key = $state');
       notifyListeners();
     });
     
