@@ -47,6 +47,11 @@ class StateVariableItem {
   String get parameterID {
     return '0x${svID.toRadixString(16)}';
   }
+  
+  // Helper method to get a unique key for this state variable
+  String get uniqueKey {
+    return '${hiQnetAddress.toLowerCase()}:${parameterID.toLowerCase()}';
+  }
 
   @override
   String toString() {

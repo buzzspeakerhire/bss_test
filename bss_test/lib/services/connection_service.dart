@@ -130,7 +130,7 @@ class ConnectionService {
   // Send data to the device
   Future<bool> sendData(List<int> data) async {
     if (!isConnected || socket == null) {
-      Logger().log('Not connected to device');
+      Logger().log('Not connected to device: isConnected=$isConnected, socket=${socket != null}');
       return false;
     }
     
@@ -139,7 +139,20 @@ class ConnectionService {
       final hexData = data.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
       Logger().log('Sending data: $hexData');
       
+      try {
+        Logger().log('Socket stats: localAddress=${socket!.address.address}, localPort=${socket!.port}, remoteAddress=${socket!.remoteAddress.address}, remotePort=${socket!.remotePort}');
+      } catch (e) {
+        Logger().log('Could not get socket stats: $e');
+      }
+      
       socket!.add(Uint8List.fromList(data));
+      try {
+        await socket!.flush(); // Ensure data is sent immediately
+        Logger().log('Data sent to socket and flushed');
+      } catch (e) {
+        Logger().log('Could not flush socket: $e');
+      }
+      
       return true;
     } catch (e) {
       Logger().log('Failed to send data: $e');
@@ -211,6 +224,36 @@ class ConnectionService {
   // Notify connection status changes
   void _notifyConnectionStatus() {
     _safeAddToStream(_connectionStatusController, isConnected);
+  }
+  
+  // Check if the socket is actually working by sending a ping
+  Future<bool> pingSocket() async {
+    if (!isConnected || socket == null) {
+      Logger().log('Cannot ping - not connected or socket is null');
+      return false;
+    }
+    
+    try {
+      // Create a simple BSS protocol ping (subscribe to a non-existent parameter)
+      final pingData = [0x02, 0x89, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x8C, 0x03];
+      socket!.add(Uint8List.fromList(pingData));
+      Logger().log('Ping sent to socket');
+      return true;
+    } catch (e) {
+      Logger().log('Ping failed: $e');
+      return false;
+    }
+  }
+  
+  // Force reconnect to refresh the connection
+  Future<bool> reconnect() async {
+    Logger().log('Forcing reconnection...');
+    disconnect();
+    
+    // Wait a moment for socket to fully close
+    await Future.delayed(const Duration(milliseconds: 500));
+    
+    return connect(ip: ipAddress, portNum: port);
   }
   
   // Clean up resources

@@ -169,20 +169,41 @@ class ControlModel {
     return ControlType.unknown;
   }
   
-  // Helper method to get protocol address for this control
+  // Get all HiQnet addresses for this control
+  List<String> getAllAddresses() {
+    return stateVariables.map((sv) => sv.hiQnetAddress.toLowerCase()).toList();
+  }
+
+  // Get all parameter IDs for this control
+  List<String> getAllParameterIds() {
+    return stateVariables.map((sv) => sv.parameterID.toLowerCase()).toList();
+  }
+
+  // Get all address-paramId pairs as a list of maps
+  List<Map<String, String>> getAddressParameterPairs() {
+    return stateVariables.map((sv) => {
+      'address': sv.hiQnetAddress.toLowerCase(),
+      'paramId': sv.parameterID.toLowerCase(),
+    }).toList();
+  }
+
+  // Helper to get addressParamId pair string for a specific index
+  String getAddressParamPairKey(int index) {
+    if (index < 0 || index >= stateVariables.length) return '';
+    final sv = stateVariables[index];
+    return '${sv.hiQnetAddress.toLowerCase()}:${sv.parameterID.toLowerCase()}';
+  }
+
+  // These methods are kept for backwards compatibility
   String? getPrimaryAddress() {
     if (stateVariables.isEmpty) return null;
-    String address = stateVariables.first.hiQnetAddress;
-    // Ensure address is properly formatted and lowercase for consistent comparisons
-    return address.toLowerCase();
+    return stateVariables.first.hiQnetAddress.toLowerCase();
   }
-  
+
   // Helper method to get parameter ID for this control
   String? getPrimaryParameterId() {
     if (stateVariables.isEmpty) return null;
-    String paramId = stateVariables.first.parameterID;
-    // Ensure parameter ID is properly formatted and lowercase for consistent comparisons
-    return paramId.toLowerCase();
+    return stateVariables.first.parameterID.toLowerCase();
   }
   
   // Get all state variables for this control
