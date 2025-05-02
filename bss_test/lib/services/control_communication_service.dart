@@ -304,6 +304,30 @@ class ControlCommunicationService {
     }
   }
   
+  // Subscribe to source selector
+  Future<bool> subscribeSourceValue(String addressHex, String paramIdHex) async {
+    try {
+      final address = _bssProtocolService.parseHiQnetAddress(addressHex);
+      final paramId = int.parse(paramIdHex.replaceAll("0x", ""), radix: 16);
+      
+      Logger().log('Subscribing to source value: $addressHex, $paramIdHex');
+      
+      final command = _bssProtocolService.generateSubscribeCommand(address, paramId);
+      final success = await _connectionService.sendData(command);
+      
+      if (success) {
+        Logger().log('Subscribe source command sent successfully');
+      } else {
+        Logger().log('Failed to send subscribe source command');
+      }
+      
+      return success;
+    } catch (e) {
+      Logger().log('Error subscribing to source value: $e');
+      return false;
+    }
+  }
+  
   // Set meter refresh rate
   void setMeterRefreshRate(int refreshRate) {
     _meterRefreshRate = refreshRate;
@@ -386,11 +410,26 @@ class ControlCommunicationService {
       await Future.delayed(const Duration(milliseconds: 100));
       
       // 4. Subscribe to source selector parameter
-      final sourceAddress = _bssProtocolService.parseHiQnetAddress("0x2D6803000300");
-      final sourceParamId = 0; // 0x0
+      // Using the UI controller values if available
+      String sourceAddressText = "0x2D6803000101"; // Use the address from the UI
+      int sourceParamId = 0; // 0x0
+      
+      if (_sourceHiQnetAddressController != null) {
+        sourceAddressText = _sourceHiQnetAddressController!.text;
+      }
+      
+      if (_sourceParamIdController != null) {
+        try {
+          sourceParamId = int.parse(_sourceParamIdController!.text.replaceAll("0x", ""), radix: 16);
+        } catch (e) {
+          Logger().log('Error parsing source param ID: $e, using default 0');
+        }
+      }
+      
+      final sourceAddress = _bssProtocolService.parseHiQnetAddress(sourceAddressText);
       final sourceSubscribeCmd = _bssProtocolService.generateSubscribeCommand(sourceAddress, sourceParamId);
       await _connectionService.sendData(sourceSubscribeCmd);
-      Logger().log('Subscribed to source selector: 0x2D6803000300, 0x0');
+      Logger().log('Subscribed to source selector: $sourceAddressText, 0x$sourceParamId');
       
       Logger().log('All parameter subscriptions complete');
       
@@ -528,8 +567,8 @@ class ControlCommunicationService {
               Logger().log('Updated meter value: ${normalizedValue.toStringAsFixed(3)}, ${dbValue.toStringAsFixed(1)}dB');
             }
           } 
-          else if (addressLower.contains("0300")) {
-            // This is a source selector
+          else if (addressLower.contains("0101")) {
+            // This is a source selector - FIXED: look for "0101" instead of "0300"
             _safeAddToStream(_sourceUpdateController, {
               'address': addressHex,
               'paramId': paramIdHex,

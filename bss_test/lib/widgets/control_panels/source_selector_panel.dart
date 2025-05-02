@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'dart:async';
 import '../../services/control_communication_service.dart';
 
 class SourceSelectorPanel extends StatefulWidget {
@@ -17,35 +18,87 @@ class _SourceSelectorPanelState extends State<SourceSelectorPanel> {
   final _controlService = ControlCommunicationService();
   
   // Text controllers
-  final _sourceHiQnetAddressController = TextEditingController(text: "0x2D6803000300");
+  final _sourceHiQnetAddressController = TextEditingController(text: "0x2D6803000101");
   final _sourceParamIdController = TextEditingController(text: "0x0");
   
   // Control values
   int _sourceValue = 0; // Current source selection
   int _numSourceOptions = 8; // Number of source options available
   
+  // Stream subscription
+  StreamSubscription? _sourceUpdateSubscription;
+  
   @override
   void initState() {
     super.initState();
     
+    // Register with control service
+    _controlService.setSourceAddressControllers(_sourceHiQnetAddressController, _sourceParamIdController);
+    
     // Listen for source updates
-    _controlService.onSourceUpdate.listen((data) {
-      final address = _sourceHiQnetAddressController.text;
-      final paramId = _sourceParamIdController.text;
+    _sourceUpdateSubscription = _controlService.onSourceUpdate.listen((data) {
+      final address = _sourceHiQnetAddressController.text.toLowerCase();
+      final paramId = _sourceParamIdController.text.toLowerCase();
       
-      if (data['address'] == address && data['paramId'] == paramId) {
+      if (data['address'].toString().toLowerCase() == address && 
+          data['paramId'].toString().toLowerCase() == paramId) {
         setState(() {
-          _sourceValue = data['value'];
+          _sourceValue = data['value'] as int;
+          debugPrint('SourceSelectorPanel: Updated source value: $_sourceValue');
         });
       }
     });
+    
+    // Request current source value if connected
+    if (widget.isConnected) {
+      _requestSourceValue();
+    }
+  }
+  
+  @override
+  void didUpdateWidget(SourceSelectorPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    
+    // React to connection state changes
+    if (widget.isConnected != oldWidget.isConnected && widget.isConnected) {
+      // Connection just became active, request current state
+      _requestSourceValue();
+    }
+  }
+  
+  // Request current source value from device
+  void _requestSourceValue() {
+    if (widget.isConnected) {
+      // Send a subscribe message to get current value
+      debugPrint('SourceSelectorPanel: Requesting current source value');
+      
+      final address = _sourceHiQnetAddressController.text;
+      final paramId = _sourceParamIdController.text;
+      
+      _controlService.subscribeSourceValue(address, paramId);
+    }
   }
   
   @override
   void dispose() {
+    _sourceUpdateSubscription?.cancel();
     _sourceHiQnetAddressController.dispose();
     _sourceParamIdController.dispose();
     super.dispose();
+  }
+  
+  // Update number of source options
+  void _updateNumSourceOptions(String value) {
+    int? numOptions = int.tryParse(value);
+    if (numOptions != null && numOptions > 0) {
+      setState(() {
+        _numSourceOptions = numOptions;
+        // Make sure current selection is valid
+        if (_sourceValue >= _numSourceOptions) {
+          _sourceValue = _numSourceOptions - 1;
+        }
+      });
+    }
   }
   
   // Update source selection
@@ -62,20 +115,6 @@ class _SourceSelectorPanelState extends State<SourceSelectorPanel> {
           _sourceValue,
         );
       }
-    }
-  }
-  
-  // Update number of source options
-  void _updateNumSourceOptions(String value) {
-    int? numOptions = int.tryParse(value);
-    if (numOptions != null && numOptions > 0) {
-      setState(() {
-        _numSourceOptions = numOptions;
-        // Make sure current selection is valid
-        if (_sourceValue >= _numSourceOptions) {
-          _sourceValue = _numSourceOptions - 1;
-        }
-      });
     }
   }
 
@@ -98,7 +137,7 @@ class _SourceSelectorPanelState extends State<SourceSelectorPanel> {
                     decoration: const InputDecoration(
                       labelText: 'HiQnet Address',
                       border: OutlineInputBorder(),
-                      hintText: 'Example: 0x2D6803000300',
+                      hintText: 'Example: 0x2D6803000101',
                     ),
                   ),
                 ),
@@ -124,7 +163,6 @@ class _SourceSelectorPanelState extends State<SourceSelectorPanel> {
                 SizedBox(
                   width: 80,
                   child: TextField(
-                    // Fixed: Using controller instead of initialValue
                     controller: TextEditingController(text: _numSourceOptions.toString()),
                     decoration: const InputDecoration(
                       border: OutlineInputBorder(),
@@ -133,6 +171,13 @@ class _SourceSelectorPanelState extends State<SourceSelectorPanel> {
                     keyboardType: TextInputType.number,
                     onChanged: _updateNumSourceOptions,
                   ),
+                ),
+                const Spacer(),
+                // Add a refresh button
+                IconButton(
+                  icon: const Icon(Icons.refresh),
+                  onPressed: _requestSourceValue,
+                  tooltip: 'Force refresh',
                 ),
               ],
             ),
@@ -143,7 +188,7 @@ class _SourceSelectorPanelState extends State<SourceSelectorPanel> {
                 const SizedBox(width: 16),
                 Expanded(
                   child: DropdownButtonFormField<int>(
-                    value: _sourceValue,
+                    value: _sourceValue < _numSourceOptions ? _sourceValue : 0,
                     decoration: const InputDecoration(
                       border: OutlineInputBorder(),
                       contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 4),
