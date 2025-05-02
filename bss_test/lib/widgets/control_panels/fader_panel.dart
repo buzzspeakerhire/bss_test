@@ -235,17 +235,21 @@ class _FaderPanelState extends State<FaderPanel> {
     );
   }
   
-  // Convert normalized value to dB for display
+  // Convert normalized value to dB for display - fixed to match BSS scaling
   double _getDbValue(double normalizedValue) {
     if (normalizedValue <= 0.0) return -80.0; // Minimum
+    if (normalizedValue >= 1.0) return 10.0;  // Maximum
     
-    // Logarithmic scaling
-    if (normalizedValue < 0.73) {
-      // Below unity gain (0.73 is ~0dB)
-      return -80.0 + (normalizedValue / 0.73) * 80.0;
+    // Exact unity gain
+    if ((normalizedValue - 0.7373).abs() < 0.001) return 0.0;
+    
+    // For values below 0.7373 (unity gain)
+    if (normalizedValue < 0.7373) {
+      // Scale from -80dB to 0dB
+      return -80.0 + (normalizedValue / 0.7373) * 80.0;
     } else {
-      // Above unity gain
-      return (normalizedValue - 0.73) / 0.27 * 10.0;
+      // Scale from 0dB to +10dB
+      return ((normalizedValue - 0.7373) / (1.0 - 0.7373)) * 10.0;
     }
   }
 }
